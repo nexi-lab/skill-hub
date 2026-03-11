@@ -193,5 +193,58 @@ class InstallationRecord(BaseModel):
     package_key: str
     target: InstallTarget
     scope_id: str
+    nexus_base_url: str
+    nexus_target_path: str
     status: InstallationStatus = InstallationStatus.PENDING
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class NexusRemoteStatus(BaseModel):
+    """Phase 1 remote Nexus configuration exposure."""
+
+    mode: Literal["remote_namespace_backed"] = "remote_namespace_backed"
+    base_url: str
+    api_key_configured: bool
+    install_root: str
+
+
+class InstallPreview(BaseModel):
+    """Resolved install preview against a remote Nexus namespace."""
+
+    package_key: str
+    target: InstallTarget
+    scope_id: str
+    nexus_base_url: str
+    nexus_target_path: str
+    steps: list[str] = Field(default_factory=list)
+    capabilities_requested: list[str] = Field(default_factory=list)
+
+
+class PackageListResponse(BaseModel):
+    """Response model for listing package versions."""
+
+    packages: list[PackageRecord]
+
+
+class PackageVersionResponse(BaseModel):
+    """Response model for a single package version."""
+
+    package: PackageRecord
+
+
+class PackageVersionsResponse(BaseModel):
+    """Response model for all versions of a package key."""
+
+    packages: list[PackageRecord]
+
+
+class InstallationListResponse(BaseModel):
+    """Response model for listing installations."""
+
+    installations: list[InstallationRecord]
+
+
+class InstallationResponse(BaseModel):
+    """Response model for a single installation."""
+
+    installation: InstallationRecord

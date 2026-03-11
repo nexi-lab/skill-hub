@@ -34,7 +34,7 @@ def dump_example_manifest() -> str:
         "files": {
             "skill_doc": "SKILL.md",
             "references": ["references/quickstart.md"],
-            "examples": ["examples/request.txt"],
+            "examples": [],
             "assets": [],
         },
         "entrypoints": {
