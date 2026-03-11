@@ -2,164 +2,175 @@
 
 ## Executive Summary
 
-Phase 1 makes `skill-hub` a remote Nexus-backed package control plane for skills.
+Phase 1 makes `skill-hub` a real Nexus-backed install control plane.
 
-The key boundary is deliberate:
+The important boundary is:
 
-- `skill-hub` owns packaging, cataloging, install previews, and install records
-- remote Nexus provides the namespace model that installs resolve into
-- runtime execution is deferred to Phase 2
+- `skill-hub` owns package metadata, catalog APIs, preview, and install orchestration
+- Nexus owns the remote namespace, auth boundary, and installed file state
 
-This gives us a real product surface now without pretending that workflows,
-MCP mounts, credentials, or permissions are finished.
+Phase 1 now performs live remote mutation, but only at the file/package layer.
+
+It still does not claim a runtime for workflows, MCP mounts, credentials, or policy.
 
 ## Product Statement
 
-In Phase 1, a skill is:
+In Phase 1, a skill package is:
 
-- a directory with `SKILL.md`
-- a typed `skillhub.yaml`
-- optional support files such as `references/`, `examples/`, `scripts/`, and `assets/`
+- a local directory
+- a required `skillhub.yaml`
+- a required `SKILL.md`
+- optional `references/`, `examples/`, `assets/`, `scripts/`, and `workflows/`
 
 In Phase 1, installation means:
 
-- validate package metadata
-- register a package version
-- resolve the target path on a remote Nexus namespace
-- record that install against a scope
+1. validate the manifest and declared files
+2. register the package in the catalog
+3. resolve the Nexus target path for the requested scope
+4. probe remote Nexus health
+5. create the target directory in Nexus
+6. write the declared package files through `/api/v2/files/*`
+7. record the installation in `skill-hub`
 
 It does not yet mean:
 
-- executing the skill
-- mounting tools
-- binding secrets into runtime resources
-- enforcing policy in Nexus
+- executing package code
+- loading workflows into a runtime scheduler
+- mounting MCP tools
+- binding secrets
+- generating enforceable access manifests
 
-## Why Remote Nexus Is Already Part Of Phase 1
+## Why Nexus Is In Phase 1
 
-Phase 1 is not runtime-heavy, but it is not Nexus-free.
+Phase 1 is not just “Nexus-aware”. It directly uses Nexus as the remote file plane.
 
-It uses remote Nexus as the authoritative namespace model for where packages land:
+Specifically, `skill-hub` talks to:
 
-- `/skills/system/packages/...`
-- `/skills/zones/<zone_id>/...`
-- `/skills/users/<user_id>/...`
-- `/skills/agents/<agent_id>/...`
+- `GET /health`
+- `POST /api/v2/files/mkdir`
+- `POST /api/v2/files/write`
+- `GET /api/v2/files/exists`
 
-That gives us:
+That gives Phase 1 three concrete properties:
 
-- stable install semantics
-- future compatibility with Phase 2 materialization
-- a clean migration path from “install record” to “runtime-backed install”
+- installs land in a real remote system
+- package contents are visible in Nexus immediately
+- the Phase 2 runtime can build on the same installed paths
 
-## System Boundaries
+## Install Targets
 
-### skill-hub
+Install targets map to stable Nexus path conventions:
 
-Owns:
+- `system` -> `/skills/system/packages/<publisher>/<name>/<version>`
+- `zone` -> `/skills/zones/<zone_id>/<publisher>/<name>/<version>`
+- `user` -> `/skills/users/<user_id>/<publisher>/<name>/<version>`
+- `agent` -> `/skills/agents/<agent_id>/<publisher>/<name>/<version>`
 
-- manifest validation
-- package registration
-- package listing
-- install preview
-- install recording
-- API and CLI ergonomics
-
-### Remote Nexus
-
-Phase 1 role:
-
-- namespace anchor
-- scope model
-- future runtime target
-
-Phase 2 role:
-
-- workflow runtime
-- MCP runtime
-- credentials / manifests / policy
-- install rollback and snapshots
+These path conventions are part of the Phase 1 contract.
 
 ## Architecture Diagram
 
 ```text
-Authors / CLI / API Clients
-          |
-          v
-+----------------------+
-| skill-hub API / CLI  |
-| validation + catalog |
-| preview + installs   |
-+----------------------+
-          |
-          v
-+----------------------+
-| Nexus Adapter        |
-| remote namespace     |
-| planning only        |
-+----------------------+
-          |
-          v
-+----------------------+
-| Remote Nexus         |
-| /skills/... paths    |
-| runtime in Phase 2   |
-+----------------------+
+Author / CI / CLI / API client
+             |
+             v
+   +-----------------------+
+   | skill-hub API / CLI   |
+   | manifest validation   |
+   | local package loading |
+   | preview + installs    |
+   +-----------------------+
+             |
+             v
+   +-----------------------+
+   | Nexus Adapter         |
+   | /health               |
+   | /api/v2/files/*       |
+   +-----------------------+
+             |
+             v
+   +-----------------------+
+   | Remote Nexus          |
+   | /skills/... contents  |
+   | future runtime layer  |
+   +-----------------------+
 ```
 
 ## Core Components
 
 ### Manifest Model
 
-`skillhub.yaml` is the machine-readable contract for:
+`skillhub.yaml` defines:
 
-- identity
+- package identity
 - package type
-- target scope
-- risk metadata
-- credentials metadata
-- permissions metadata
+- install target
+- Nexus compatibility
+- declared credentials
+- declared capabilities and permission metadata
+- file groups
 - future runtime entrypoints
+
+### Local Package Loader
+
+The local package loader:
+
+- reads `skillhub.yaml`
+- validates that declared files exist
+- computes a deterministic package digest
+- records a `file://` artifact URI for Phase 1 installs
 
 ### Catalog API
 
-The API exposes:
+The catalog API supports:
 
-- remote Nexus config
-- package registration
-- package listing
+- raw package registration
+- local-directory registration
+- package listing and version lookup
 - install preview
-- install recording
+- install execution
+- install record lookup
 
 ### Nexus Adapter
 
-The adapter resolves package installs into concrete Nexus target paths.
+The Nexus adapter is the Phase 1 integration seam.
 
-That is the crucial Phase 1 “backed by Nexus” guarantee.
+Its responsibilities are:
 
-### Example Package
+- derive target paths from scope
+- probe remote Nexus
+- create target directories
+- write declared files
+- verify that the written files exist remotely
 
-The example package proves the minimum contract and supports docs, tests, and quick start.
+## Security Posture In Phase 1
+
+Phase 1 is deliberately conservative.
+
+- package files are materialized as files only
+- scripts are not executed
+- workflow YAML is not executed
+- MCP entrypoints are metadata only
+- declared permissions remain informational metadata
 
 ## Non-Goals
 
-Phase 1 intentionally avoids:
+Phase 1 intentionally excludes:
 
-- artifact registries
-- MCP execution
-- workflow execution
-- live remote Nexus mutation
-- policy enforcement
+- OCI artifact storage
+- workflow runtime registration
+- MCP mounting
+- credential binding
 - approval workflows
+- rollback and snapshots
 - billing and reputation
 
 ## Phase 2 Expansion
 
-Phase 2 will extend the same adapter boundary to:
+Phase 2 should extend the same install boundary into runtime-aware installs:
 
-- materialize package files into Nexus
-- register workflow resources
+- register workflow resources with Nexus
 - register MCP mounts
 - bind credentials
-- generate access-manifest policy
-- support rollback and install previews with real Nexus actions
+- generate access manifests
+- add rollback and snapshot-aware previews

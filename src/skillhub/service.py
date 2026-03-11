@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from skillhub.local_package import load_local_package
 from skillhub.models import (
     InstallPreview,
     InstallationRecord,
     InstallationRequest,
     InstallationStatus,
+    LocalPackageRegistrationRequest,
+    NexusRemoteHealth,
     PackageRecord,
     PackageRegistrationRequest,
 )
@@ -42,6 +47,11 @@ class SkillHubService:
         )
         return self._packages.upsert(package)
 
+    def register_local_package(self, request: LocalPackageRegistrationRequest) -> PackageRecord:
+        """Register a package directly from a local source directory."""
+        package = load_local_package(Path(request.source_dir))
+        return self._packages.upsert(package)
+
     def list_packages(self) -> list[PackageRecord]:
         return self._packages.list_all()
 
@@ -57,6 +67,10 @@ class SkillHubService:
             raise KeyError(f"Unknown package version: {package_key}@{version}")
         return package
 
+    def probe_nexus(self) -> NexusRemoteHealth:
+        """Probe remote Nexus health."""
+        return self._nexus.probe_remote()
+
     def preview_install(self, request: InstallationRequest) -> InstallPreview:
         """Resolve the remote Nexus target path for a package install."""
         package = self.get_package_version(request.publisher, request.name, request.version)
@@ -64,17 +78,26 @@ class SkillHubService:
 
     def install_package(self, request: InstallationRequest) -> InstallationRecord:
         package = self.get_package_version(request.publisher, request.name, request.version)
-        preview = self._nexus.preview_install(package, request.target, request.scope_id)
+        plan = self._nexus.build_install_plan(package, request.target, request.scope_id)
+        materialized_files = self._nexus.apply_install_plan(plan)
 
         installation = InstallationRecord(
             package_key=package.versioned_key,
             target=request.target,
             scope_id=request.scope_id,
-            nexus_base_url=preview.nexus_base_url,
-            nexus_target_path=preview.nexus_target_path,
+            nexus_base_url=self._settings.nexus_base_url,
+            nexus_target_path=plan.nexus_target_path,
+            source_artifact_uri=package.artifact_uri,
+            materialized_files=materialized_files,
             status=InstallationStatus.INSTALLED,
         )
         return self._installations.add(installation)
 
     def list_installations(self) -> list[InstallationRecord]:
         return self._installations.list_all()
+
+    def get_installation(self, installation_id: str) -> InstallationRecord:
+        installation = self._installations.get(installation_id)
+        if installation is None:
+            raise KeyError(f"Unknown installation: {installation_id}")
+        return installation

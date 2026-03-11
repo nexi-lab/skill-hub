@@ -8,17 +8,31 @@ Local development:
 http://127.0.0.1:8040
 ```
 
-## OpenAPI
+OpenAPI:
 
 - `/docs`
 - `/redoc`
 - `/openapi.json`
 
-## Endpoints
+## Design Notes
+
+Phase 1 has two package registration paths:
+
+- `POST /v1/packages/register`
+  Use this when another system already owns the manifest payload.
+- `POST /v1/packages/register-local`
+  Use this when `skill-hub` should read `skillhub.yaml` from a local package directory.
+
+The remote Nexus integration is live in Phase 1:
+
+- preview resolves target paths and remote files
+- install writes the declared package files into Nexus
+
+## Nexus Routes
 
 ### `GET /health`
 
-Returns service liveness.
+Service liveness for `skill-hub`.
 
 Example response:
 
@@ -30,34 +44,48 @@ Example response:
 
 ### `GET /v1/nexus`
 
-Returns the effective remote Nexus configuration used for install planning.
+Returns the effective remote Nexus configuration.
 
 Example response:
 
 ```json
 {
-  "mode": "remote_namespace_backed",
-  "base_url": "http://localhost:2026",
+  "mode": "remote_http_backed",
+  "base_url": "http://127.0.0.1:2026",
   "api_key_configured": true,
-  "install_root": "/skills"
+  "install_root": "/skills",
+  "health_url": "http://127.0.0.1:2026/health",
+  "files_api_base": "http://127.0.0.1:2026/api/v2/files"
 }
 ```
+
+### `GET /v1/nexus/health`
+
+Probes remote Nexus health.
+
+Example response:
+
+```json
+{
+  "nexus": {
+    "reachable": true,
+    "status": "ok",
+    "service": "nexus-rpc",
+    "http_status": 200,
+    "detail": null
+  }
+}
+```
+
+## Package Routes
 
 ### `GET /v1/packages`
 
 Lists all registered package versions.
 
-Example response:
-
-```json
-{
-  "packages": []
-}
-```
-
 ### `POST /v1/packages/register`
 
-Registers a new package version.
+Registers a package version from an explicit manifest payload.
 
 Example request:
 
@@ -88,8 +116,57 @@ Example request:
       "mcp_servers": []
     }
   },
-  "artifact_uri": "file://examples/hello-skill",
-  "artifact_digest": "sha256:phase1-example"
+  "artifact_uri": "file:///absolute/path/to/hello-skill",
+  "artifact_digest": "sha256:..."
+}
+```
+
+### `POST /v1/packages/register-local`
+
+Registers a package version from a local directory.
+
+Example request:
+
+```json
+{
+  "source_dir": "examples/hello-skill"
+}
+```
+
+Example response:
+
+```json
+{
+  "package": {
+    "manifest": {
+      "schema_version": "1",
+      "name": "hello-skill",
+      "publisher": "nexi-lab",
+      "version": "0.1.0",
+      "type": "prompt_pack",
+      "description": "Minimal example package for the skill-hub Phase 1 scaffold.",
+      "nexus_version": ">=0.1.0",
+      "install_target": "user",
+      "capabilities_requested": ["read_skill_docs"],
+      "risk_level": "low",
+      "credentials": [],
+      "permissions": [],
+      "files": {
+        "skill_doc": "SKILL.md",
+        "references": ["references/quickstart.md"],
+        "examples": [],
+        "assets": []
+      },
+      "entrypoints": {
+        "scripts": [],
+        "workflows": [],
+        "mcp_servers": []
+      }
+    },
+    "artifact_uri": "file:///absolute/path/to/examples/hello-skill",
+    "artifact_digest": "sha256:...",
+    "created_at": "2026-03-11T00:00:00Z"
+  }
 }
 ```
 
@@ -97,25 +174,15 @@ Example request:
 
 Lists all known versions for one package key.
 
-Example:
-
-```text
-GET /v1/packages/nexi-lab/hello-skill
-```
-
 ### `GET /v1/packages/{publisher}/{name}/{version}`
 
 Returns one specific package version.
 
-Example:
-
-```text
-GET /v1/packages/nexi-lab/hello-skill/0.1.0
-```
+## Installation Routes
 
 ### `POST /v1/installations/preview`
 
-Resolves where a package would land inside the remote Nexus namespace.
+Resolves where a registered package will land in Nexus and which files will be written.
 
 Example request:
 
@@ -136,33 +203,72 @@ Example response:
   "package_key": "nexi-lab/hello-skill@0.1.0",
   "target": "user",
   "scope_id": "demo-user",
-  "nexus_base_url": "http://localhost:2026",
+  "nexus_base_url": "http://127.0.0.1:2026",
   "nexus_target_path": "/skills/users/demo-user/nexi-lab/hello-skill/0.1.0",
   "steps": [
-    "resolve_remote_namespace",
-    "materialize_skill_docs",
+    "probe_remote_health",
+    "create_install_root",
+    "write_package_files",
+    "verify_remote_target",
     "record_installation"
   ],
-  "capabilities_requested": ["read_skill_docs"]
+  "capabilities_requested": ["read_skill_docs"],
+  "materialized_files": [
+    "/skills/users/demo-user/nexi-lab/hello-skill/0.1.0/skillhub.yaml",
+    "/skills/users/demo-user/nexi-lab/hello-skill/0.1.0/SKILL.md",
+    "/skills/users/demo-user/nexi-lab/hello-skill/0.1.0/references/quickstart.md"
+  ]
 }
 ```
 
 ### `POST /v1/installations`
 
-Records an install against a scope.
+Installs a registered package into remote Nexus.
 
-It currently records the resolved target path; it does not yet execute remote Nexus mutations.
+Current Phase 1 behavior:
+
+- creates the target directory in Nexus
+- writes the declared files
+- verifies the written files with `exists`
+- records the install
+
+Example response:
+
+```json
+{
+  "installation": {
+    "id": "2cb09d80-1b48-4f45-b6a6-8a934c3db111",
+    "package_key": "nexi-lab/hello-skill@0.1.0",
+    "target": "user",
+    "scope_id": "demo-user",
+    "nexus_base_url": "http://127.0.0.1:2026",
+    "nexus_target_path": "/skills/users/demo-user/nexi-lab/hello-skill/0.1.0",
+    "source_artifact_uri": "file:///absolute/path/to/examples/hello-skill",
+    "materialized_files": [
+      "/skills/users/demo-user/nexi-lab/hello-skill/0.1.0/skillhub.yaml",
+      "/skills/users/demo-user/nexi-lab/hello-skill/0.1.0/SKILL.md",
+      "/skills/users/demo-user/nexi-lab/hello-skill/0.1.0/references/quickstart.md"
+    ],
+    "status": "installed",
+    "created_at": "2026-03-11T00:00:00Z"
+  }
+}
+```
 
 ### `GET /v1/installations`
 
-Lists recorded installs.
+Lists installation records.
+
+### `GET /v1/installations/{installation_id}`
+
+Returns one installation record.
 
 ## Phase 1 Stability Contract
 
-The following are intended to remain stable across the rest of Phase 1:
+The following are intended to remain stable through the rest of Phase 1:
 
 - `skillhub.yaml` schema version `1`
 - package key format: `publisher/name@version`
 - target scopes: `system`, `zone`, `user`, `agent`
-- remote Nexus namespace path conventions
-- API routes listed in this document
+- Nexus target path conventions under `/skills/...`
+- the endpoints listed in this document

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -151,6 +152,12 @@ class PackageRegistrationRequest(BaseModel):
     artifact_digest: str = Field(default="")
 
 
+class LocalPackageRegistrationRequest(BaseModel):
+    """API request for registering a local package directory."""
+
+    source_dir: str = Field(..., description="Local directory containing skillhub.yaml and SKILL.md.")
+
+
 class PackageRecord(BaseModel):
     """Stored package version metadata."""
 
@@ -166,6 +173,14 @@ class PackageRecord(BaseModel):
     @property
     def versioned_key(self) -> str:
         return self.manifest.versioned_key
+
+    @property
+    def local_source_dir(self) -> str | None:
+        """Resolve a file:// artifact URI into a local source directory."""
+        if not self.artifact_uri.startswith("file://"):
+            return None
+        parsed = urlparse(self.artifact_uri)
+        return unquote(parsed.path)
 
 
 class InstallationStatus(StrEnum):
@@ -195,6 +210,8 @@ class InstallationRecord(BaseModel):
     scope_id: str
     nexus_base_url: str
     nexus_target_path: str
+    source_artifact_uri: str = ""
+    materialized_files: list[str] = Field(default_factory=list)
     status: InstallationStatus = InstallationStatus.PENDING
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -202,10 +219,22 @@ class InstallationRecord(BaseModel):
 class NexusRemoteStatus(BaseModel):
     """Phase 1 remote Nexus configuration exposure."""
 
-    mode: Literal["remote_namespace_backed"] = "remote_namespace_backed"
+    mode: Literal["remote_http_backed"] = "remote_http_backed"
     base_url: str
     api_key_configured: bool
     install_root: str
+    health_url: str
+    files_api_base: str
+
+
+class NexusRemoteHealth(BaseModel):
+    """Observed remote Nexus health."""
+
+    reachable: bool
+    status: str | None = None
+    service: str | None = None
+    http_status: int | None = None
+    detail: str | None = None
 
 
 class InstallPreview(BaseModel):
@@ -218,6 +247,7 @@ class InstallPreview(BaseModel):
     nexus_target_path: str
     steps: list[str] = Field(default_factory=list)
     capabilities_requested: list[str] = Field(default_factory=list)
+    materialized_files: list[str] = Field(default_factory=list)
 
 
 class PackageListResponse(BaseModel):
@@ -248,3 +278,9 @@ class InstallationResponse(BaseModel):
     """Response model for a single installation."""
 
     installation: InstallationRecord
+
+
+class NexusRemoteHealthResponse(BaseModel):
+    """Response wrapper for a remote Nexus health probe."""
+
+    nexus: NexusRemoteHealth

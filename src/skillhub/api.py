@@ -9,21 +9,24 @@ from skillhub.models import (
     InstallationRequest,
     InstallationResponse,
     InstallPreview,
+    LocalPackageRegistrationRequest,
+    NexusRemoteHealthResponse,
     NexusRemoteStatus,
     PackageListResponse,
     PackageRegistrationRequest,
     PackageVersionResponse,
     PackageVersionsResponse,
 )
+from skillhub.nexus_adapter import NexusRemoteError
 from skillhub.service import SkillHubService
 
 app = FastAPI(
     title="skill-hub",
     version="0.1.0",
-    summary="Remote Nexus-backed skill catalog and install control plane.",
+    summary="Nexus-backed skill packaging, catalog, and install control plane.",
     description=(
-        "Phase 1 of skill-hub packages, registers, previews, and records installs "
-        "for SKILL.md-based packages using remote Nexus namespace conventions."
+        "Phase 1 of skill-hub validates local skill packages, registers them in a catalog, "
+        "and materializes declared package files into remote Nexus through the /api/v2/files APIs."
     ),
 )
 service = SkillHubService()
@@ -37,8 +40,14 @@ def health() -> dict[str, str]:
 
 @app.get("/v1/nexus", response_model=NexusRemoteStatus, tags=["nexus"])
 def get_nexus_remote() -> NexusRemoteStatus:
-    """Expose the effective remote Nexus configuration used for planning."""
+    """Expose the effective remote Nexus configuration used for installs."""
     return service.nexus.describe_remote()
+
+
+@app.get("/v1/nexus/health", response_model=NexusRemoteHealthResponse, tags=["nexus"])
+def get_nexus_remote_health() -> NexusRemoteHealthResponse:
+    """Probe the configured remote Nexus service."""
+    return NexusRemoteHealthResponse(nexus=service.probe_nexus())
 
 
 @app.get("/v1/packages", response_model=PackageListResponse, tags=["packages"])
@@ -56,6 +65,21 @@ def list_packages() -> PackageListResponse:
 def register_package(request: PackageRegistrationRequest) -> PackageVersionResponse:
     """Register a package version in the catalog."""
     package = service.register_package(request)
+    return PackageVersionResponse(package=package)
+
+
+@app.post(
+    "/v1/packages/register-local",
+    status_code=201,
+    response_model=PackageVersionResponse,
+    tags=["packages"],
+)
+def register_local_package(request: LocalPackageRegistrationRequest) -> PackageVersionResponse:
+    """Register a package version from a local source directory."""
+    try:
+        package = service.register_local_package(request)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return PackageVersionResponse(package=package)
 
 
@@ -102,11 +126,13 @@ def preview_install(request: InstallationRequest) -> InstallPreview:
     tags=["installations"],
 )
 def install_package(request: InstallationRequest) -> InstallationResponse:
-    """Record a package install for a target scope."""
+    """Install a package by materializing its declared files into remote Nexus."""
     try:
         installation = service.install_package(request)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except NexusRemoteError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return InstallationResponse(installation=installation)
 
 
@@ -114,3 +140,17 @@ def install_package(request: InstallationRequest) -> InstallationResponse:
 def list_installations() -> InstallationListResponse:
     """List recorded installs."""
     return InstallationListResponse(installations=service.list_installations())
+
+
+@app.get(
+    "/v1/installations/{installation_id}",
+    response_model=InstallationResponse,
+    tags=["installations"],
+)
+def get_installation(installation_id: str) -> InstallationResponse:
+    """Fetch one installation record."""
+    try:
+        installation = service.get_installation(installation_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return InstallationResponse(installation=installation)

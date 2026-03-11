@@ -43,3 +43,9 @@ class InstallationStore:
 
     def list_all(self) -> list[InstallationRecord]:
         return list(self._installations)
+
+    def get(self, installation_id: str) -> InstallationRecord | None:
+        for installation in self._installations:
+            if installation.id == installation_id:
+                return installation
+        return None

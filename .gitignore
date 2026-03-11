@@ -2,6 +2,8 @@
 .pytest_cache/
 .ruff_cache/
 .venv/
+.tmp-nexus-data/
+.tmp-nexus-data-kernel/
 __pycache__/
 *.pyc
 dist/
