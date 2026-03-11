@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "skill-hub"
+version = "0.1.0"
+description = "Phase 1 skill catalog and install control plane for Nexus-backed skills."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "pydantic>=2.10,<3",
+  "pyyaml>=6.0,<7",
+  "typer>=0.12,<1",
+  "uvicorn>=0.30,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.27,<1",
+  "pytest>=8.3,<9",
+]
+
+[project.scripts]
+skillhub = "skillhub.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/skillhub"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
