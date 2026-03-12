@@ -2,5 +2,5 @@ services:
   nexus:
     build:
       context: ..
-      dockerfile: Dockerfile
+      dockerfile: skill-hub/docker/nexus.local.Dockerfile
     image: skillhub-local-nexus:latest

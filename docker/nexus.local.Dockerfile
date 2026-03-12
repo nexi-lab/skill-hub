@@ -1,7 +1,5 @@
 FROM python:3.13-slim
 
-ARG NEXUS_VERSION=latest
-
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     HF_HOME=/app/data/.cache/huggingface \
@@ -18,18 +16,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install --no-cache-dir uv
 
-WORKDIR /app
+WORKDIR /src
 
-RUN if [ "$NEXUS_VERSION" = "latest" ]; then \
-      uv pip install --system "nexus-ai-fs[semantic-search]"; \
-    else \
-      uv pip install --system "nexus-ai-fs[semantic-search]==${NEXUS_VERSION}"; \
-    fi
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+
+RUN uv pip install --system ".[semantic-search]"
 
 RUN useradd -r -m -u 1000 -s /bin/bash nexus \
     && mkdir -p /app/data \
     && chown -R nexus:nexus /app
 
+WORKDIR /app
 USER nexus
 
 EXPOSE 2026

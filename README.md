@@ -95,13 +95,15 @@ Start the default stack:
 docker compose -f compose.yaml up --build
 ```
 
-This builds a Nexus container from PyPI inside the repo, so it works from a clean `skill-hub` clone without private registry access.
+This builds a Nexus container from PyPI inside the repo and installs `nexus-ai-fs[semantic-search]`, so semantic search works from a clean `skill-hub` clone without private registry access.
 
 If you are developing in a workspace that also has the Nexus repo checked out as the parent directory, you can override the default service and build Nexus from local source:
 
 ```bash
 docker compose -f compose.yaml -f compose.local.yaml up --build
 ```
+
+The local-source override installs `.[semantic-search]` from the checked-out Nexus repo, so the default and local-source boot paths both enable txtai-backed search.
 
 The stack starts:
 
@@ -114,6 +116,8 @@ Compose enables Nexus search and uses:
 - `NEXUS_API_KEY=dev-key`
 - `SKILLHUB_NEXUS_CATALOG_ROOT=/skill-hub`
 - `SKILLHUB_NEXUS_INSTALL_ROOT=/skills`
+
+On the first boot, Nexus may spend extra time downloading the txtai embedding model into the Docker volume cache under `/app/data/.cache`. After that, restarts are much faster.
 
 ### 2. Verify The Stack
 
@@ -147,6 +151,14 @@ curl -sS "http://localhost:8040/v1/packages/search?q=hello&limit=5"
 ```
 
 If Nexus search is healthy, this uses Nexus search. If not, `skill-hub` falls back to metadata search.
+
+To confirm semantic search is actually active, inspect Nexus search stats:
+
+```bash
+curl -sS http://localhost:2026/api/v2/search/stats
+```
+
+You should see `"backend": "txtai"` once the search daemon is ready.
 
 ### 5. Retrieve The Published Package
 
