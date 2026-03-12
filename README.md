@@ -89,13 +89,15 @@ This is the intended end-to-end path.
 
 ### 1. Start The Stack
 
-If you want to use the published Nexus image:
+Start the default stack:
 
 ```bash
 docker compose -f compose.yaml up --build
 ```
 
-If you are developing in a workspace that also has the Nexus repo checked out as the parent directory, build Nexus from local source:
+This builds a Nexus container from PyPI inside the repo, so it works from a clean `skill-hub` clone without private registry access.
+
+If you are developing in a workspace that also has the Nexus repo checked out as the parent directory, you can override the default service and build Nexus from local source:
 
 ```bash
 docker compose -f compose.yaml -f compose.local.yaml up --build
@@ -228,6 +230,8 @@ skill-hub/
     hello-skill/
   scripts/
     e2e_smoke.sh
+  docker/
+    nexus.Dockerfile
   src/
     skillhub/
   compose.yaml

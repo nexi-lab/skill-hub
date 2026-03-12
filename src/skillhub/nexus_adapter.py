@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import uuid
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
@@ -117,6 +118,16 @@ class NexusAdapter:
                 return dict(payload)
         return {}
 
+    def _decode_rpc_value(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            marker = value.get("__type__")
+            if marker == "bytes" and isinstance(value.get("data"), str):
+                return base64.b64decode(value["data"])
+            return {key: self._decode_rpc_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._decode_rpc_value(item) for item in value]
+        return value
+
     def _request(
         self,
         method: str,
@@ -145,6 +156,28 @@ class NexusAdapter:
             detail = response.text.strip() or response.reason_phrase
             raise NexusRemoteError(f"Nexus {method} {path} failed ({response.status_code}): {detail}")
         return response
+
+    def _rpc_request(
+        self,
+        method: str,
+        params: dict[str, object] | None = None,
+    ) -> Any:
+        payload = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": method,
+            "params": params or {},
+        }
+        response = self._request(
+            "POST",
+            f"/api/nfs/{method}",
+            json_body=payload,
+        )
+        body = self._json_or_empty(response)
+        error = body.get("error")
+        if error:
+            raise NexusRemoteError(f"Nexus RPC {method} failed: {error}")
+        return self._decode_rpc_value(body.get("result"))
 
     def _scope_prefix(self, target: InstallTarget, scope_id: str) -> str:
         if target is InstallTarget.SYSTEM:
@@ -186,11 +219,7 @@ class NexusAdapter:
         return f"{self.catalog_installations_root}/{installation_id}.json"
 
     def _mkdir(self, path: str) -> None:
-        self._request(
-            "POST",
-            "/api/v2/files/mkdir",
-            json_body={"path": path, "parents": True},
-        )
+        self._rpc_request("mkdir", {"path": path, "parents": True, "exist_ok": True})
 
     def _ensure_parent_directory(self, path: str) -> None:
         parent = str(PurePosixPath(path).parent)
@@ -200,17 +229,13 @@ class NexusAdapter:
     def _write_file(self, path: str, content: bytes) -> None:
         self._ensure_parent_directory(path)
         try:
-            payload: dict[str, object] = {
-                "path": path,
-                "content": content.decode("utf-8"),
-            }
+            rpc_content: object = content.decode("utf-8")
         except UnicodeDecodeError:
-            payload = {
-                "path": path,
-                "content": base64.b64encode(content).decode("ascii"),
-                "encoding": "base64",
+            rpc_content = {
+                "__type__": "bytes",
+                "data": base64.b64encode(content).decode("ascii"),
             }
-        self._request("POST", "/api/v2/files/write", json_body=payload)
+        self._rpc_request("write", {"path": path, "content": rpc_content})
 
     def _write_text(self, path: str, content: str) -> None:
         self._write_file(path, content.encode("utf-8"))
@@ -219,35 +244,53 @@ class NexusAdapter:
         self._write_text(path, json.dumps(payload, indent=2, sort_keys=True))
 
     def _exists(self, path: str) -> bool:
-        response = self._request(
-            "GET",
-            "/api/v2/files/exists",
-            params={"path": path},
-        )
-        return bool(self._json_or_empty(response).get("exists"))
+        try:
+            result = self._rpc_request("exists", {"path": path})
+        except NexusRemoteError:
+            response = self._request(
+                "GET",
+                "/api/v2/files/exists",
+                params={"path": path},
+            )
+            return bool(self._json_or_empty(response).get("exists"))
+        if isinstance(result, dict):
+            return bool(result.get("exists"))
+        return bool(result)
 
     def _read_text(self, path: str) -> str | None:
-        response = self._request(
-            "GET",
-            "/api/v2/files/read",
-            params={"path": path},
-            expected_statuses={200, 404},
-        )
-        if response.status_code == 404:
-            return None
-        payload = self._json_or_empty(response)
-        content = payload.get("content")
+        try:
+            content = self._rpc_request("read", {"path": path})
+        except NexusRemoteError as exc:
+            lowered = str(exc).lower()
+            if "not found" in lowered or "file_not_found" in lowered:
+                return None
+            raise
         if content is None:
             return ""
+        if isinstance(content, bytes):
+            return content.decode("utf-8", errors="replace")
+        if isinstance(content, dict):
+            value = content.get("content")
+            if value is None:
+                return ""
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace")
+            return str(value)
         return str(content)
 
     def _read_bytes(self, path: str) -> bytes:
-        response = self._request(
-            "GET",
-            "/api/v2/files/stream",
-            params={"path": path},
-        )
-        return bytes(response.content)
+        content = self._rpc_request("read", {"path": path})
+        if isinstance(content, bytes):
+            return content
+        if isinstance(content, dict):
+            value = content.get("content")
+            if isinstance(value, bytes):
+                return value
+            if isinstance(value, str):
+                return value.encode("utf-8")
+        if isinstance(content, str):
+            return content.encode("utf-8")
+        raise NexusRemoteError(f"Unexpected RPC read payload for {path}: {type(content).__name__}")
 
     def _read_json(self, path: str) -> dict[str, Any] | None:
         content = self._read_text(path)

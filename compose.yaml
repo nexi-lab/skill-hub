@@ -15,7 +15,12 @@ services:
       - postgres-data:/var/lib/postgresql/data
 
   nexus:
-    image: ${NEXUS_IMAGE:-gcr.io/nexi-lab-888/nexus-server:latest}
+    build:
+      context: .
+      dockerfile: docker/nexus.Dockerfile
+      args:
+        NEXUS_VERSION: ${NEXUS_VERSION:-latest}
+    image: skill-hub-nexus:latest
     container_name: skillhub-nexus
     depends_on:
       postgres:
@@ -33,6 +38,11 @@ services:
       NEXUS_ENFORCE_PERMISSIONS: "false"
     volumes:
       - nexus-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:2026/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
 
   skillhub:
     build:
