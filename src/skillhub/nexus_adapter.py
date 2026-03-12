@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -28,6 +30,9 @@ class NexusRemoteError(RuntimeError):
     """Raised when remote Nexus rejects or fails an operation."""
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass(frozen=True)
 class InstallPlan:
     """A concrete install plan sourced from the Nexus catalog artifact store."""
@@ -42,6 +47,9 @@ class InstallPlan:
 
 class NexusAdapter:
     """Remote Nexus boundary backed by health, files, and search APIs."""
+
+    _SEARCH_RETRY_DELAYS_SECONDS = (0.0, 0.15, 0.35)
+    _SEARCH_PUBLISH_WAIT_DELAYS_SECONDS = (0.0, 0.1, 0.25, 0.5, 1.0)
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -314,6 +322,106 @@ class NexusAdapter:
         except NexusRemoteError:
             return
 
+    def _metadata_fallback_hits(
+        self,
+        packages: list[PackageRecord],
+        query: str,
+    ) -> list[PackageSearchHit]:
+        lowered = query.lower()
+        fallback_hits: list[PackageSearchHit] = []
+        for package in packages:
+            haystack = "\n".join(
+                [
+                    package.manifest.publisher,
+                    package.manifest.name,
+                    package.manifest.version,
+                    package.manifest.description,
+                    *package.manifest.capabilities_requested,
+                    *package.artifact_files,
+                ]
+            ).lower()
+            if lowered not in haystack:
+                continue
+            fallback_hits.append(
+                PackageSearchHit(
+                    package=package,
+                    score=1.0,
+                    snippet=package.manifest.description,
+                    backend="metadata_fallback",
+                    matched_path=package.search_document_path,
+                )
+            )
+        return fallback_hits
+
+    def _query_search_results(
+        self,
+        query: str,
+        *,
+        limit: int,
+        mode: str,
+        path: str,
+    ) -> list[dict[str, Any]]:
+        response = self._request(
+            "GET",
+            "/api/v2/search/query",
+            params={
+                "q": query,
+                "type": mode,
+                "limit": str(limit),
+                "path": path,
+            },
+        )
+        payload = self._json_or_empty(response)
+        results = payload.get("results", [])
+        return [item for item in results if isinstance(item, dict)]
+
+    def _search_hits_from_results(
+        self,
+        results: list[dict[str, Any]],
+        package_map: dict[tuple[str, str, str], PackageRecord],
+    ) -> list[PackageSearchHit]:
+        hits: list[PackageSearchHit] = []
+        seen: set[str] = set()
+        for result in results:
+            matched_path = str(result.get("path", ""))
+            parts = PurePosixPath(
+                matched_path.removeprefix(f"{self.catalog_search_root}/")
+            ).parts
+            if len(parts) != 4 or parts[-1] != "document.md":
+                continue
+            key = (parts[0], parts[1], parts[2])
+            package = package_map.get(key)
+            if package is None or package.versioned_key in seen:
+                continue
+            seen.add(package.versioned_key)
+            hits.append(
+                PackageSearchHit(
+                    package=package,
+                    score=float(result["score"]) if result.get("score") is not None else None,
+                    snippet=str(result.get("chunk_text", "")),
+                    backend="nexus_search",
+                    matched_path=matched_path,
+                )
+            )
+        return hits
+
+    def _wait_for_search_visibility(self, package: PackageRecord) -> None:
+        for delay in self._SEARCH_PUBLISH_WAIT_DELAYS_SECONDS:
+            if delay:
+                time.sleep(delay)
+            try:
+                results = self._query_search_results(
+                    package.manifest.name,
+                    limit=1,
+                    mode="semantic",
+                    path=package.search_document_path,
+                )
+            except NexusRemoteError:
+                continue
+            if any(str(item.get("path", "")) == package.search_document_path for item in results):
+                return
+        logger.debug("Search document was not queryable before publish returned: %s", package.versioned_key)
+
     def _read_package_index(self) -> list[PackageRecord]:
         payload = self._read_json(self.package_index_path)
         if not payload:
@@ -439,6 +547,7 @@ class NexusAdapter:
         self._write_package_index(packages)
         self._notify_search_refresh(stored.search_document_path, "create")
         self._notify_search_refresh(stored.catalog_record_path, "create")
+        self._wait_for_search_visibility(stored)
         return stored
 
     def upsert_installation(self, installation: InstallationRecord) -> InstallationRecord:
@@ -507,71 +616,28 @@ class NexusAdapter:
             (item.manifest.publisher, item.manifest.name, item.manifest.version): item
             for item in packages
         }
+        fallback_hits = self._metadata_fallback_hits(packages, query)
+        search_delays = (
+            self._SEARCH_RETRY_DELAYS_SECONDS if fallback_hits else self._SEARCH_RETRY_DELAYS_SECONDS[:1]
+        )
 
-        try:
-            response = self._request(
-                "GET",
-                "/api/v2/search/query",
-                params={
-                    "q": query,
-                    "type": mode,
-                    "limit": str(limit),
-                    "path": self.catalog_search_root,
-                },
-            )
-            payload = self._json_or_empty(response)
-            hits: list[PackageSearchHit] = []
-            seen: set[str] = set()
-            for result in payload.get("results", []):
-                if not isinstance(result, dict):
-                    continue
-                matched_path = str(result.get("path", ""))
-                parts = PurePosixPath(matched_path.removeprefix(f"{self.catalog_search_root}/")).parts
-                if len(parts) != 4 or parts[-1] != "document.md":
-                    continue
-                key = (parts[0], parts[1], parts[2])
-                package = package_map.get(key)
-                if package is None or package.versioned_key in seen:
-                    continue
-                seen.add(package.versioned_key)
-                hits.append(
-                    PackageSearchHit(
-                        package=package,
-                        score=float(result["score"]) if result.get("score") is not None else None,
-                        snippet=str(result.get("chunk_text", "")),
-                        backend="nexus_search",
-                        matched_path=matched_path,
-                    )
+        for delay in search_delays:
+            if delay:
+                time.sleep(delay)
+            try:
+                results = self._query_search_results(
+                    query,
+                    limit=limit,
+                    mode=mode,
+                    path=self.catalog_search_root,
                 )
+            except NexusRemoteError as exc:
+                logger.debug("Nexus search failed, retrying before fallback: %s", exc)
+                continue
+            hits = self._search_hits_from_results(results, package_map)
             if hits:
                 return ("nexus_search", hits[:limit])
-        except NexusRemoteError:
-            pass
 
-        lowered = query.lower()
-        fallback_hits: list[PackageSearchHit] = []
-        for package in packages:
-            haystack = "\n".join(
-                [
-                    package.manifest.publisher,
-                    package.manifest.name,
-                    package.manifest.version,
-                    package.manifest.description,
-                    *package.manifest.capabilities_requested,
-                    *package.artifact_files,
-                ]
-            ).lower()
-            if lowered not in haystack:
-                continue
-            fallback_hits.append(
-                PackageSearchHit(
-                    package=package,
-                    score=1.0,
-                    snippet=package.manifest.description,
-                    backend="metadata_fallback",
-                    matched_path=package.search_document_path,
-                )
-            )
         return ("metadata_fallback", fallback_hits[:limit])
 
     def build_install_plan(

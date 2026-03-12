@@ -1,4 +1,8 @@
+import httpx
+
+from skillhub.models import PackageRecord, PackageType, SkillManifest
 from skillhub.nexus_adapter import NexusAdapter
+from skillhub.nexus_adapter import NexusRemoteError
 from skillhub.settings import Settings
 
 
@@ -11,6 +15,23 @@ def _adapter() -> NexusAdapter:
             nexus_catalog_root="/skill-hub",
             nexus_timeout_seconds=5.0,
         )
+    )
+
+
+def _package() -> PackageRecord:
+    manifest = SkillManifest(
+        name="hello-skill",
+        publisher="nexi-lab",
+        version="0.1.0",
+        type=PackageType.PROMPT_PACK,
+        description="Minimal example package for the skill-hub Phase 1 scaffold.",
+        capabilities_requested=["read_skill_docs"],
+    )
+    return PackageRecord(
+        manifest=manifest,
+        artifact_uri="nexus:///skill-hub/artifacts/nexi-lab/hello-skill/0.1.0",
+        artifact_files=["skillhub.yaml", "SKILL.md", "references/quickstart.md"],
+        search_document_path="/skill-hub/search/nexi-lab/hello-skill/0.1.0/document.md",
     )
 
 
@@ -81,3 +102,72 @@ def test_read_text_decodes_rpc_bytes(monkeypatch) -> None:
     monkeypatch.setattr(adapter, "_rpc_request", lambda method, params=None: b"hello")
 
     assert adapter._read_text("/skill-hub/packages.json") == "hello"
+
+
+def test_search_packages_retries_after_transient_nexus_error(monkeypatch) -> None:
+    adapter = _adapter()
+    package = _package()
+    calls = {"count": 0}
+
+    monkeypatch.setattr(adapter, "_read_package_index", lambda: [package])
+    monkeypatch.setattr("skillhub.nexus_adapter.time.sleep", lambda seconds: None)
+
+    def _fake_request(method, path, *, json_body=None, params=None, expected_statuses=None):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise NexusRemoteError("Nexus GET /api/v2/search/query failed (500): Search query failed")
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "path": package.search_document_path,
+                        "chunk_text": "# Hello Skill",
+                        "score": 0.42,
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(adapter, "_request", _fake_request)
+
+    backend, hits = adapter.search_packages("hello", limit=5, mode="hybrid")
+
+    assert backend == "nexus_search"
+    assert calls["count"] == 2
+    assert hits[0].package.manifest.name == "hello-skill"
+    assert hits[0].backend == "nexus_search"
+
+
+def test_search_packages_retries_after_empty_results_when_metadata_matches(monkeypatch) -> None:
+    adapter = _adapter()
+    package = _package()
+    calls = {"count": 0}
+
+    monkeypatch.setattr(adapter, "_read_package_index", lambda: [package])
+    monkeypatch.setattr("skillhub.nexus_adapter.time.sleep", lambda seconds: None)
+
+    def _fake_request(method, path, *, json_body=None, params=None, expected_statuses=None):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return httpx.Response(200, json={"results": []})
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "path": package.search_document_path,
+                        "chunk_text": "# Hello Skill",
+                        "score": 0.84,
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(adapter, "_request", _fake_request)
+
+    backend, hits = adapter.search_packages("hello", limit=5, mode="hybrid")
+
+    assert backend == "nexus_search"
+    assert calls["count"] == 2
+    assert hits[0].matched_path == package.search_document_path
