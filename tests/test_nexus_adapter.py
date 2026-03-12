@@ -171,3 +171,45 @@ def test_search_packages_retries_after_empty_results_when_metadata_matches(monke
     assert backend == "nexus_search"
     assert calls["count"] == 2
     assert hits[0].matched_path == package.search_document_path
+
+
+def test_search_document_is_queryable_requires_exact_document(monkeypatch) -> None:
+    adapter = _adapter()
+    package = _package()
+
+    def _fake_query(query, *, limit, mode, path):
+        assert path == package.search_document_path
+        return [
+            {
+                "path": "/skill-hub/search/nexi-lab/other-skill/0.1.0/document.md",
+                "score": 0.9,
+                "chunk_text": "# Other Skill",
+            }
+        ]
+
+    monkeypatch.setattr(adapter, "_query_search_results", _fake_query)
+
+    assert adapter._search_document_is_queryable(package) is False
+
+
+def test_wait_for_search_visibility_retries_until_exact_document_queryable(monkeypatch) -> None:
+    adapter = _adapter()
+    package = _package()
+    attempts = {"count": 0}
+    clock = {"value": 100.0}
+
+    def _fake_is_queryable(candidate: PackageRecord) -> bool:
+        assert candidate == package
+        attempts["count"] += 1
+        return attempts["count"] >= 3
+
+    def _fake_sleep(seconds: float) -> None:
+        clock["value"] += seconds
+
+    monkeypatch.setattr(adapter, "_search_document_is_queryable", _fake_is_queryable)
+    monkeypatch.setattr("skillhub.nexus_adapter.time.sleep", _fake_sleep)
+    monkeypatch.setattr("skillhub.nexus_adapter.time.monotonic", lambda: clock["value"])
+
+    adapter._wait_for_search_visibility(package)
+
+    assert attempts["count"] == 3

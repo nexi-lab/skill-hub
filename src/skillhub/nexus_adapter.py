@@ -49,7 +49,8 @@ class NexusAdapter:
     """Remote Nexus boundary backed by health, files, and search APIs."""
 
     _SEARCH_RETRY_DELAYS_SECONDS = (0.0, 0.15, 0.35)
-    _SEARCH_PUBLISH_WAIT_DELAYS_SECONDS = (0.0, 0.1, 0.25, 0.5, 1.0)
+    _SEARCH_PUBLISH_WAIT_TIMEOUT_SECONDS = 10.0
+    _SEARCH_PUBLISH_WAIT_POLL_SECONDS = 0.25
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -405,22 +406,38 @@ class NexusAdapter:
             )
         return hits
 
-    def _wait_for_search_visibility(self, package: PackageRecord) -> None:
-        for delay in self._SEARCH_PUBLISH_WAIT_DELAYS_SECONDS:
-            if delay:
-                time.sleep(delay)
+    def _search_document_is_queryable(self, package: PackageRecord) -> bool:
+        readiness_queries = (
+            (package.versioned_key, "keyword"),
+            (package.manifest.name, "keyword"),
+            (package.manifest.name, "semantic"),
+        )
+        for query, mode in readiness_queries:
             try:
                 results = self._query_search_results(
-                    package.manifest.name,
+                    query,
                     limit=1,
-                    mode="semantic",
+                    mode=mode,
                     path=package.search_document_path,
                 )
             except NexusRemoteError:
                 continue
             if any(str(item.get("path", "")) == package.search_document_path for item in results):
+                return True
+        return False
+
+    def _wait_for_search_visibility(self, package: PackageRecord) -> None:
+        deadline = time.monotonic() + self._SEARCH_PUBLISH_WAIT_TIMEOUT_SECONDS
+        while True:
+            if self._search_document_is_queryable(package):
                 return
-        logger.debug("Search document was not queryable before publish returned: %s", package.versioned_key)
+            if time.monotonic() >= deadline:
+                logger.debug(
+                    "Search document was not queryable before publish returned: %s",
+                    package.versioned_key,
+                )
+                return
+            time.sleep(self._SEARCH_PUBLISH_WAIT_POLL_SECONDS)
 
     def _read_package_index(self) -> list[PackageRecord]:
         payload = self._read_json(self.package_index_path)
