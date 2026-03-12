@@ -1,0 +1,64 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: skillhub-postgres
+    environment:
+      POSTGRES_DB: nexus
+      POSTGRES_USER: skillhub
+      POSTGRES_PASSWORD: skillhub
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U skillhub -d nexus"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  nexus:
+    image: ${NEXUS_IMAGE:-gcr.io/nexi-lab-888/nexus-server:latest}
+    container_name: skillhub-nexus
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "2026:2026"
+    environment:
+      NEXUS_HOST: 0.0.0.0
+      NEXUS_PORT: 2026
+      NEXUS_PROFILE: full
+      NEXUS_API_KEY: ${NEXUS_API_KEY:-dev-key}
+      NEXUS_DATABASE_URL: postgresql://skillhub:skillhub@postgres:5432/nexus
+      NEXUS_SEARCH_DAEMON: "true"
+      NEXUS_SKIP_PERMISSIONS: "true"
+      NEXUS_ENFORCE_PERMISSIONS: "false"
+    volumes:
+      - nexus-data:/app/data
+
+  skillhub:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: skill-hub:latest
+    container_name: skillhub-api
+    depends_on:
+      nexus:
+        condition: service_healthy
+    ports:
+      - "8040:8040"
+    environment:
+      NEXUS_BASE_URL: http://nexus:2026
+      NEXUS_API_KEY: ${NEXUS_API_KEY:-dev-key}
+      SKILLHUB_NEXUS_INSTALL_ROOT: /skills
+      SKILLHUB_NEXUS_CATALOG_ROOT: /skill-hub
+    volumes:
+      - ./examples:/workspace/examples:ro
+      - ./scripts:/workspace/scripts:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8040/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  postgres-data:
+  nexus-data:

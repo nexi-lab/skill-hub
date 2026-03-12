@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from skillhub.local_package import load_local_package
+from skillhub.local_package import collect_declared_package_files, load_local_package
 from skillhub.models import (
     InstallPreview,
     InstallationRecord,
@@ -13,6 +13,7 @@ from skillhub.models import (
     LocalPackageRegistrationRequest,
     NexusRemoteHealth,
     PackageRecord,
+    PackageSearchHit,
     PackageRegistrationRequest,
 )
 from skillhub.nexus_adapter import NexusAdapter
@@ -29,10 +30,10 @@ class SkillHubService:
         installation_store: InstallationStore | None = None,
         settings: Settings | None = None,
     ) -> None:
-        self._packages = package_store or PackageStore()
-        self._installations = installation_store or InstallationStore()
         self._settings = settings or get_settings()
         self._nexus = NexusAdapter(self._settings)
+        self._packages = package_store or PackageStore(adapter=self._nexus)
+        self._installations = installation_store or InstallationStore(adapter=self._nexus)
 
     @property
     def nexus(self) -> NexusAdapter:
@@ -49,11 +50,23 @@ class SkillHubService:
 
     def register_local_package(self, request: LocalPackageRegistrationRequest) -> PackageRecord:
         """Register a package directly from a local source directory."""
-        package = load_local_package(Path(request.source_dir))
-        return self._packages.upsert(package)
+        package_dir = Path(request.source_dir)
+        package = load_local_package(package_dir)
+        package_files = collect_declared_package_files(package_dir, package.manifest)
+        return self._packages.upsert(package, package_files)
 
     def list_packages(self) -> list[PackageRecord]:
         return self._packages.list_all()
+
+    def search_packages(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        mode: str = "hybrid",
+    ) -> tuple[str, list[PackageSearchHit]]:
+        """Search the package catalog."""
+        return self._packages.search(query, limit=limit, mode=mode)
 
     def get_package_versions(self, publisher: str, name: str) -> list[PackageRecord]:
         package_key = f"{publisher}/{name}"
@@ -66,6 +79,17 @@ class SkillHubService:
         if package is None:
             raise KeyError(f"Unknown package version: {package_key}@{version}")
         return package
+
+    def get_package_artifact_content(
+        self,
+        publisher: str,
+        name: str,
+        version: str,
+        path: str,
+    ) -> str:
+        """Read one package artifact file from Nexus."""
+        package = self.get_package_version(publisher, name, version)
+        return self._nexus.get_package_artifact_content(package, path)
 
     def probe_nexus(self) -> NexusRemoteHealth:
         """Probe remote Nexus health."""
@@ -87,7 +111,7 @@ class SkillHubService:
             scope_id=request.scope_id,
             nexus_base_url=self._settings.nexus_base_url,
             nexus_target_path=plan.nexus_target_path,
-            source_artifact_uri=package.artifact_uri,
+            source_artifact_uri=package.source_uri or package.artifact_uri,
             materialized_files=materialized_files,
             status=InstallationStatus.INSTALLED,
         )

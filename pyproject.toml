@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "skill-hub"
 version = "0.1.0"
-description = "Nexus-backed skill packaging, catalog, and installation control plane."
+description = "Nexus-backed skill catalog, package publishing, search, and installation control plane."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

@@ -163,7 +163,11 @@ class PackageRecord(BaseModel):
 
     manifest: SkillManifest
     artifact_uri: str = ""
+    source_uri: str = ""
     artifact_digest: str = ""
+    artifact_files: list[str] = Field(default_factory=list)
+    catalog_record_path: str = ""
+    search_document_path: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @property
@@ -176,10 +180,11 @@ class PackageRecord(BaseModel):
 
     @property
     def local_source_dir(self) -> str | None:
-        """Resolve a file:// artifact URI into a local source directory."""
-        if not self.artifact_uri.startswith("file://"):
+        """Resolve a file:// source URI into a local source directory."""
+        uri = self.source_uri or self.artifact_uri
+        if not uri.startswith("file://"):
             return None
-        parsed = urlparse(self.artifact_uri)
+        parsed = urlparse(uri)
         return unquote(parsed.path)
 
 
@@ -223,8 +228,10 @@ class NexusRemoteStatus(BaseModel):
     base_url: str
     api_key_configured: bool
     install_root: str
+    catalog_root: str
     health_url: str
     files_api_base: str
+    search_api_base: str
 
 
 class NexusRemoteHealth(BaseModel):
@@ -256,6 +263,24 @@ class PackageListResponse(BaseModel):
     packages: list[PackageRecord]
 
 
+class PackageSearchHit(BaseModel):
+    """One hit from package catalog search."""
+
+    package: PackageRecord
+    score: float | None = None
+    snippet: str = ""
+    backend: str = "metadata_fallback"
+    matched_path: str = ""
+
+
+class PackageSearchResponse(BaseModel):
+    """Response model for package search."""
+
+    query: str
+    backend: str
+    hits: list[PackageSearchHit]
+
+
 class PackageVersionResponse(BaseModel):
     """Response model for a single package version."""
 
@@ -278,6 +303,22 @@ class InstallationResponse(BaseModel):
     """Response model for a single installation."""
 
     installation: InstallationRecord
+
+
+class PackageArtifactResponse(BaseModel):
+    """Response model for artifact metadata."""
+
+    package: PackageRecord
+    artifact_root: str
+    files: list[str]
+
+
+class PackageContentResponse(BaseModel):
+    """Response model for one artifact file."""
+
+    package_key: str
+    path: str
+    content: str
 
 
 class NexusRemoteHealthResponse(BaseModel):

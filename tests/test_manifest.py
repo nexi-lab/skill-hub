@@ -8,8 +8,9 @@ def test_example_manifest_loads() -> None:
     assert manifest.files.skill_doc == "SKILL.md"
 
 
-def test_local_package_loads_with_file_artifact() -> None:
+def test_local_package_loads_with_source_uri() -> None:
     package = load_local_package("examples/hello-skill")
     assert package.manifest.versioned_key == "nexi-lab/hello-skill@0.1.0"
-    assert package.artifact_uri.startswith("file://")
+    assert package.source_uri.startswith("file://")
+    assert package.artifact_uri == ""
     assert package.artifact_digest.startswith("sha256:")

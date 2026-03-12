@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 
 from skillhub.models import (
     InstallationListResponse,
     InstallationRequest,
     InstallationResponse,
     InstallPreview,
+    PackageArtifactResponse,
+    PackageContentResponse,
     LocalPackageRegistrationRequest,
     NexusRemoteHealthResponse,
     NexusRemoteStatus,
     PackageListResponse,
     PackageRegistrationRequest,
+    PackageSearchResponse,
     PackageVersionResponse,
     PackageVersionsResponse,
 )
@@ -54,6 +57,17 @@ def get_nexus_remote_health() -> NexusRemoteHealthResponse:
 def list_packages() -> PackageListResponse:
     """List registered package versions."""
     return PackageListResponse(packages=service.list_packages())
+
+
+@app.get("/v1/packages/search", response_model=PackageSearchResponse, tags=["packages"])
+def search_packages(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(10, ge=1, le=100),
+    mode: str = Query("hybrid"),
+) -> PackageSearchResponse:
+    """Search the Nexus-backed package catalog."""
+    backend, hits = service.search_packages(q, limit=limit, mode=mode)
+    return PackageSearchResponse(query=q, backend=backend, hits=hits)
 
 
 @app.post(
@@ -108,6 +122,46 @@ def get_package_version(publisher: str, name: str, version: str) -> PackageVersi
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return PackageVersionResponse(package=package)
+
+
+@app.get(
+    "/v1/packages/{publisher}/{name}/{version}/artifact",
+    response_model=PackageArtifactResponse,
+    tags=["packages"],
+)
+def get_package_artifact(publisher: str, name: str, version: str) -> PackageArtifactResponse:
+    """Return package artifact metadata stored in Nexus."""
+    try:
+        package = service.get_package_version(publisher, name, version)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return PackageArtifactResponse(
+        package=package,
+        artifact_root=package.artifact_uri,
+        files=package.artifact_files,
+    )
+
+
+@app.get(
+    "/v1/packages/{publisher}/{name}/{version}/content",
+    response_model=PackageContentResponse,
+    tags=["packages"],
+)
+def get_package_content(
+    publisher: str,
+    name: str,
+    version: str,
+    path: str = Query(..., min_length=1),
+) -> PackageContentResponse:
+    """Read one package artifact file from the Nexus-backed catalog."""
+    try:
+        content = service.get_package_artifact_content(publisher, name, version, path)
+        package = service.get_package_version(publisher, name, version)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except NexusRemoteError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return PackageContentResponse(package_key=package.versioned_key, path=path, content=content)
 
 
 @app.post("/v1/installations/preview", response_model=InstallPreview, tags=["installations"])

@@ -2,175 +2,132 @@
 
 ## Executive Summary
 
-Phase 1 makes `skill-hub` a real Nexus-backed install control plane.
+Phase 1 is no longer just install planning.
 
-The important boundary is:
+`skill-hub` now uses Nexus as:
 
-- `skill-hub` owns package metadata, catalog APIs, preview, and install orchestration
-- Nexus owns the remote namespace, auth boundary, and installed file state
+- the package catalog store
+- the published artifact store
+- the package search substrate
+- the install destination
 
-Phase 1 now performs live remote mutation, but only at the file/package layer.
+This gives a real end-to-end product surface without building a second runtime.
 
-It still does not claim a runtime for workflows, MCP mounts, credentials, or policy.
+## Boundaries
 
-## Product Statement
+### skill-hub
 
-In Phase 1, a skill package is:
+Owns:
 
-- a local directory
-- a required `skillhub.yaml`
-- a required `SKILL.md`
-- optional `references/`, `examples/`, `assets/`, `scripts/`, and `workflows/`
+- package validation
+- package publishing
+- package metadata APIs
+- package search orchestration
+- install preview
+- install orchestration
+- installation records
 
-In Phase 1, installation means:
+### Nexus
 
-1. validate the manifest and declared files
-2. register the package in the catalog
-3. resolve the Nexus target path for the requested scope
-4. probe remote Nexus health
-5. create the target directory in Nexus
-6. write the declared package files through `/api/v2/files/*`
-7. record the installation in `skill-hub`
+Owns:
 
-It does not yet mean:
+- remote file persistence
+- search indexing and search queries
+- durable package artifact storage
+- installed package contents under `/skills/...`
 
-- executing package code
-- loading workflows into a runtime scheduler
-- mounting MCP tools
-- binding secrets
-- generating enforceable access manifests
+## Package Lifecycle
 
-## Why Nexus Is In Phase 1
+### Publish
 
-Phase 1 is not just “Nexus-aware”. It directly uses Nexus as the remote file plane.
+Publishing a local package does four things:
 
-Specifically, `skill-hub` talks to:
+1. load `skillhub.yaml`
+2. validate all declared package files
+3. write artifact files into Nexus under `/skill-hub/artifacts/...`
+4. write package metadata and a search document into Nexus
 
-- `GET /health`
-- `POST /api/v2/files/mkdir`
-- `POST /api/v2/files/write`
-- `GET /api/v2/files/exists`
+### Search
 
-That gives Phase 1 three concrete properties:
+Package search is routed through Nexus search when available:
 
-- installs land in a real remote system
-- package contents are visible in Nexus immediately
-- the Phase 2 runtime can build on the same installed paths
+- search documents live under `/skill-hub/search/...`
+- `skill-hub` calls Nexus search with `path=/skill-hub/search`
+- results are mapped back to package records
 
-## Install Targets
+If Nexus search is not enabled, `skill-hub` falls back to metadata search.
 
-Install targets map to stable Nexus path conventions:
+### Install
 
-- `system` -> `/skills/system/packages/<publisher>/<name>/<version>`
-- `zone` -> `/skills/zones/<zone_id>/<publisher>/<name>/<version>`
-- `user` -> `/skills/users/<user_id>/<publisher>/<name>/<version>`
-- `agent` -> `/skills/agents/<agent_id>/<publisher>/<name>/<version>`
+Install now copies from the Nexus-backed package artifact store into `/skills/...`.
 
-These path conventions are part of the Phase 1 contract.
+That means install no longer depends on the original local package directory after publish.
 
-## Architecture Diagram
+## Storage Layout
 
 ```text
-Author / CI / CLI / API client
-             |
-             v
-   +-----------------------+
-   | skill-hub API / CLI   |
-   | manifest validation   |
-   | local package loading |
-   | preview + installs    |
-   +-----------------------+
-             |
-             v
-   +-----------------------+
-   | Nexus Adapter         |
-   | /health               |
-   | /api/v2/files/*       |
-   +-----------------------+
-             |
-             v
-   +-----------------------+
-   | Remote Nexus          |
-   | /skills/... contents  |
-   | future runtime layer  |
-   +-----------------------+
+/skill-hub/
+  index/
+    packages.json
+    installations.json
+  packages/
+    <publisher>/<name>/<version>/package.json
+  artifacts/
+    <publisher>/<name>/<version>/...
+  search/
+    <publisher>/<name>/<version>/document.md
+  installations/
+    <installation_id>.json
 ```
 
-## Core Components
+Install targets:
 
-### Manifest Model
+```text
+/skills/system/packages/<publisher>/<name>/<version>
+/skills/zones/<zone_id>/<publisher>/<name>/<version>
+/skills/users/<user_id>/<publisher>/<name>/<version>
+/skills/agents/<agent_id>/<publisher>/<name>/<version>
+```
 
-`skillhub.yaml` defines:
+## Why This Shape
 
-- package identity
-- package type
-- install target
-- Nexus compatibility
-- declared credentials
-- declared capabilities and permission metadata
-- file groups
-- future runtime entrypoints
+This structure solves the core Phase 1 problems:
 
-### Local Package Loader
+- package catalog survives restarts
+- published packages are retrievable
+- installs can be repeated later
+- search can be delegated to Nexus instead of duplicated
+- Phase 2 can build runtime semantics on top of the same paths
 
-The local package loader:
+## Search Model
 
-- reads `skillhub.yaml`
-- validates that declared files exist
-- computes a deterministic package digest
-- records a `file://` artifact URI for Phase 1 installs
+Each published package gets a search document built from:
 
-### Catalog API
+- manifest metadata
+- `SKILL.md`
+- declared reference files
 
-The catalog API supports:
+That document is what Nexus indexes.
 
-- raw package registration
-- local-directory registration
-- package listing and version lookup
-- install preview
-- install execution
-- install record lookup
-
-### Nexus Adapter
-
-The Nexus adapter is the Phase 1 integration seam.
-
-Its responsibilities are:
-
-- derive target paths from scope
-- probe remote Nexus
-- create target directories
-- write declared files
-- verify that the written files exist remotely
-
-## Security Posture In Phase 1
-
-Phase 1 is deliberately conservative.
-
-- package files are materialized as files only
-- scripts are not executed
-- workflow YAML is not executed
-- MCP entrypoints are metadata only
-- declared permissions remain informational metadata
+The package record remains the authoritative machine-readable object.
 
 ## Non-Goals
 
-Phase 1 intentionally excludes:
+Phase 1 still excludes:
 
-- OCI artifact storage
-- workflow runtime registration
+- workflow execution
 - MCP mounting
+- credentials binding
+- runtime permission enforcement
+- rollback/snapshots
+- billing, reviews, or marketplace economics
+
+## Phase 2 Direction
+
+Phase 2 should build on the same catalog paths and add:
+
+- workflow materialization
+- MCP package materialization
 - credential binding
-- approval workflows
-- rollback and snapshots
-- billing and reputation
-
-## Phase 2 Expansion
-
-Phase 2 should extend the same install boundary into runtime-aware installs:
-
-- register workflow resources with Nexus
-- register MCP mounts
-- bind credentials
-- generate access manifests
-- add rollback and snapshot-aware previews
+- access manifest generation
+- rollback and snapshot-aware installs

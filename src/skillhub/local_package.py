@@ -93,6 +93,6 @@ def load_local_package(source_dir: str | Path) -> PackageRecord:
     files = collect_declared_package_files(package_dir, manifest)
     return PackageRecord(
         manifest=manifest,
-        artifact_uri=package_dir.as_uri(),
+        source_uri=package_dir.as_uri(),
         artifact_digest=compute_local_artifact_digest(files),
     )

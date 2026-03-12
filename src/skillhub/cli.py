@@ -77,6 +77,39 @@ def register_local(path: Path) -> None:
     typer.echo(json.dumps(package.model_dump(mode="json"), indent=2))
 
 
+@app.command("search-packages")
+def search_packages(
+    query: str,
+    limit: int = 10,
+    mode: str = "hybrid",
+) -> None:
+    """Search the Nexus-backed package catalog."""
+    service = SkillHubService()
+    backend, hits = service.search_packages(query, limit=limit, mode=mode)
+    typer.echo(
+        json.dumps(
+            {
+                "query": query,
+                "backend": backend,
+                "hits": [hit.model_dump(mode="json") for hit in hits],
+            },
+            indent=2,
+        )
+    )
+
+
+@app.command("read-package-file")
+def read_package_file(
+    publisher: str,
+    name: str,
+    version: str,
+    path: str,
+) -> None:
+    """Read one file from a published package artifact."""
+    service = SkillHubService()
+    typer.echo(service.get_package_artifact_content(publisher, name, version, path))
+
+
 @app.command("install-local")
 def install_local(
     path: Path,

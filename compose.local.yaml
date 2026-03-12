@@ -1,0 +1,6 @@
+services:
+  nexus:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: skillhub-local-nexus:latest

@@ -1,0 +1,10 @@
+.git
+.venv
+.pytest_cache
+.benchmarks
+__pycache__
+*.pyc
+.tmp-nexus-data
+.tmp-nexus-data-kernel
+dist
+build

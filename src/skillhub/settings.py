@@ -13,6 +13,7 @@ class Settings:
     nexus_base_url: str
     nexus_api_key: str
     nexus_install_root: str
+    nexus_catalog_root: str
     nexus_timeout_seconds: float
 
     @property
@@ -27,5 +28,6 @@ def get_settings() -> Settings:
         nexus_base_url=os.getenv("NEXUS_BASE_URL", "http://localhost:2026"),
         nexus_api_key=os.getenv("NEXUS_API_KEY", ""),
         nexus_install_root=os.getenv("SKILLHUB_NEXUS_INSTALL_ROOT", "/skills"),
+        nexus_catalog_root=os.getenv("SKILLHUB_NEXUS_CATALOG_ROOT", "/skill-hub"),
         nexus_timeout_seconds=float(os.getenv("SKILLHUB_NEXUS_TIMEOUT_SECONDS", "5")),
     )

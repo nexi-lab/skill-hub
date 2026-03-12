@@ -1,337 +1,243 @@
 # skill-hub
 
-Skill packaging, catalog, and installation for `SKILL.md` packages backed by Nexus.
+Nexus-backed skill catalog, package publishing, search, and installation for `SKILL.md` packages.
 
 ## One-Liner
 
-`skill-hub` turns a local `SKILL.md` directory into a versioned package that installs into a remote Nexus namespace through the official Nexus file APIs.
+`skill-hub` publishes a local `SKILL.md` package into Nexus, makes it searchable, and installs it into `/skills/...` through a clean API.
 
-## What This Repo Is
+## What Works Today
 
-`skill-hub` is the package and install control plane.
+Phase 1 is now genuinely Nexus-backed.
 
-Nexus is the remote filesystem and runtime substrate.
+- publish a local package into a Nexus-backed catalog
+- persist package metadata and package files inside Nexus
+- retrieve package metadata and package content through `skill-hub`
+- search the published package catalog, using Nexus search when available
+- install published packages into `system`, `zone`, `user`, or `agent` scopes
+- run the full stack with Docker: Postgres + Nexus + `skill-hub`
 
-Phase 1 is intentionally narrow:
+What is still out of scope:
 
-- define a package contract with `skillhub.yaml`
-- keep `SKILL.md` as the model-facing entry document
-- register local packages in a catalog API
-- preview exactly where a package will land in Nexus
-- materialize declared package files into remote Nexus with `/api/v2/files/*`
-- track installs across `system`, `zone`, `user`, and `agent` scopes
+- workflow execution
+- MCP runtime materialization
+- credential binding
+- enforceable permission manifests
+- rollback and snapshots
 
-Phase 1 does not yet:
+## System Model
 
-- execute workflows
-- mount MCP servers
-- bind credentials into runtime resources
-- enforce runtime permissions
-- manage rollback or snapshots
+`skill-hub` is the control plane.
 
-## Why Nexus
+Nexus is the package store, search substrate, and install target.
 
-`skill-hub` uses Nexus as the remote system of record for installed package contents.
+Published package state lives in Nexus under:
 
-That gives us a clean boundary:
+- catalog metadata: `/skill-hub/packages/...`
+- published artifacts: `/skill-hub/artifacts/...`
+- search documents: `/skill-hub/search/...`
+- installation records: `/skill-hub/installations/...`
 
-- `skill-hub` owns package metadata, catalog APIs, and install orchestration
-- Nexus owns remote paths, file materialization, auth, and the future runtime layer
+Installed package contents land under:
 
-In Phase 1, install targets resolve to:
+- `/skills/system/packages/...`
+- `/skills/zones/<zone_id>/...`
+- `/skills/users/<user_id>/...`
+- `/skills/agents/<agent_id>/...`
 
-- `system` -> `/skills/system/packages/<publisher>/<name>/<version>`
-- `zone` -> `/skills/zones/<zone_id>/<publisher>/<name>/<version>`
-- `user` -> `/skills/users/<user_id>/<publisher>/<name>/<version>`
-- `agent` -> `/skills/agents/<agent_id>/<publisher>/<name>/<version>`
+## API Surface
 
-## Package Contract
-
-Each package is a directory:
-
-```text
-hello-skill/
-  skillhub.yaml
-  SKILL.md
-  references/
-    quickstart.md
-```
-
-Phase 1 materializes the files explicitly declared by the manifest:
-
-- `skillhub.yaml`
-- `files.skill_doc`
-- `files.references`
-- `files.examples`
-- `files.assets`
-- declared script and workflow file paths as package assets only
-
-`skillhub.yaml` is the machine-readable contract for:
-
-- package identity
-- package type
-- Nexus compatibility
-- install scope
-- declared credentials
-- declared capability/permission metadata
-- future runtime entrypoints
-
-See the example package in `examples/hello-skill/`.
-
-## Architecture
-
-```text
-Author / CI / CLI / API client
-             |
-             v
-      +--------------+
-      | skill-hub    |
-      | pack/catalog |
-      | preview/install
-      +--------------+
-             |
-             v
-      +-------------------+
-      | Nexus HTTP APIs   |
-      | /health           |
-      | /api/v2/files/*   |
-      +-------------------+
-             |
-             v
-      /skills/<scope>/...
-```
-
-## Quick Start
-
-Follow these steps in order.
-
-### 1. Start Nexus
-
-Run a local Nexus daemon in one terminal:
-
-```bash
-nexus serve \
-  --host 127.0.0.1 \
-  --port 2026 \
-  --api-key dev-key \
-  --data-dir ./.nexus-skillhub
-```
-
-### 2. Configure `skill-hub`
-
-In a second terminal:
-
-```bash
-cd skill-hub
-export NEXUS_BASE_URL=http://127.0.0.1:2026
-export NEXUS_API_KEY=dev-key
-export SKILLHUB_NEXUS_INSTALL_ROOT=/skills
-```
-
-### 3. Install Dependencies
-
-```bash
-uv sync
-```
-
-### 4. Inspect The Remote Nexus Config
-
-```bash
-uv run skillhub nexus-info
-```
-
-Expected fields:
-
-- `mode: remote_http_backed`
-- `base_url`
-- `health_url`
-- `files_api_base`
-
-### 5. Probe Nexus Health
-
-```bash
-uv run skillhub nexus-check
-```
-
-Expected shape:
-
-```json
-{
-  "reachable": true,
-  "status": "ok",
-  "service": "nexus-rpc",
-  "http_status": 200,
-  "detail": null
-}
-```
-
-### 6. Preview A Real Install
-
-```bash
-uv run skillhub preview-install examples/hello-skill --target user --scope-id demo-user
-```
-
-The preview shows:
-
-- the resolved Nexus target directory
-- the ordered install steps
-- the exact remote files that will be written
-
-### 7. Install The Local Package Into Nexus
-
-```bash
-uv run skillhub install-local examples/hello-skill --target user --scope-id demo-user
-```
-
-Expected result:
-
-- `status` is `installed`
-- `nexus_target_path` points at `/skills/users/demo-user/nexi-lab/hello-skill/0.1.0`
-- `materialized_files` includes `skillhub.yaml`, `SKILL.md`, and the reference file
-
-### 8. Verify The Remote File In Nexus
-
-```bash
-curl -sS \
-  -H "Authorization: Bearer $NEXUS_API_KEY" \
-  "http://127.0.0.1:2026/api/v2/files/read?path=/skills/users/demo-user/nexi-lab/hello-skill/0.1.0/SKILL.md"
-```
-
-You should see the installed `SKILL.md` content from Nexus.
-
-### 9. Start The `skill-hub` API
-
-```bash
-uv run skillhub serve --host 127.0.0.1 --port 8040
-```
-
-Open:
-
-- `http://127.0.0.1:8040/docs`
-- `http://127.0.0.1:8040/redoc`
-
-### 10. Register The Example Package Through The API
-
-```bash
-curl -sS -X POST http://127.0.0.1:8040/v1/packages/register-local \
-  -H "content-type: application/json" \
-  -d '{"source_dir":"examples/hello-skill"}'
-```
-
-### 11. Preview The Install Through The API
-
-```bash
-curl -sS -X POST http://127.0.0.1:8040/v1/installations/preview \
-  -H "content-type: application/json" \
-  -d '{
-    "publisher": "nexi-lab",
-    "name": "hello-skill",
-    "version": "0.1.0",
-    "target": "user",
-    "scope_id": "demo-user"
-  }'
-```
-
-### 12. Install Through The API
-
-```bash
-curl -sS -X POST http://127.0.0.1:8040/v1/installations \
-  -H "content-type: application/json" \
-  -d '{
-    "publisher": "nexi-lab",
-    "name": "hello-skill",
-    "version": "0.1.0",
-    "target": "user",
-    "scope_id": "demo-user"
-  }'
-```
-
-### 13. List Installs
-
-```bash
-curl -sS http://127.0.0.1:8040/v1/installations
-```
-
-## CLI Commands
-
-```bash
-uv run skillhub nexus-info
-uv run skillhub nexus-check
-uv run skillhub print-example
-uv run skillhub validate-manifest examples/hello-skill/skillhub.yaml
-uv run skillhub register-local examples/hello-skill
-uv run skillhub preview-install examples/hello-skill --target user --scope-id demo-user
-uv run skillhub install-local examples/hello-skill --target user --scope-id demo-user
-uv run skillhub serve
-```
-
-## Phase 1 API
-
-Core routes:
+Current API:
 
 - `GET /health`
 - `GET /v1/nexus`
 - `GET /v1/nexus/health`
 - `GET /v1/packages`
+- `GET /v1/packages/search`
 - `POST /v1/packages/register`
 - `POST /v1/packages/register-local`
 - `GET /v1/packages/{publisher}/{name}`
 - `GET /v1/packages/{publisher}/{name}/{version}`
+- `GET /v1/packages/{publisher}/{name}/{version}/artifact`
+- `GET /v1/packages/{publisher}/{name}/{version}/content?path=...`
 - `POST /v1/installations/preview`
 - `POST /v1/installations`
 - `GET /v1/installations`
 - `GET /v1/installations/{installation_id}`
 
-Detailed docs:
+OpenAPI:
 
-- `docs/architecture/phase1.md`
-- `docs/api/phase1.md`
+- `/docs`
+- `/redoc`
 
-## Repository Layout
+## CLI Surface
+
+```bash
+uv run skillhub nexus-info
+uv run skillhub nexus-check
+uv run skillhub register-local examples/hello-skill
+uv run skillhub search-packages hello
+uv run skillhub read-package-file nexi-lab hello-skill 0.1.0 SKILL.md
+uv run skillhub preview-install examples/hello-skill --target user --scope-id demo-user
+uv run skillhub install-local examples/hello-skill --target user --scope-id demo-user
+uv run skillhub serve
+```
+
+## Quick Start: Docker E2E
+
+This is the intended end-to-end path.
+
+### 1. Start The Stack
+
+If you want to use the published Nexus image:
+
+```bash
+docker compose -f compose.yaml up --build
+```
+
+If you are developing in a workspace that also has the Nexus repo checked out as the parent directory, build Nexus from local source:
+
+```bash
+docker compose -f compose.yaml -f compose.local.yaml up --build
+```
+
+The stack starts:
+
+- `postgres` on the internal Docker network
+- `nexus` on `http://localhost:2026`
+- `skill-hub` on `http://localhost:8040`
+
+Compose enables Nexus search and uses:
+
+- `NEXUS_API_KEY=dev-key`
+- `SKILLHUB_NEXUS_CATALOG_ROOT=/skill-hub`
+- `SKILLHUB_NEXUS_INSTALL_ROOT=/skills`
+
+### 2. Verify The Stack
+
+```bash
+curl -sS http://localhost:8040/health
+curl -sS http://localhost:8040/v1/nexus
+curl -sS http://localhost:8040/v1/nexus/health
+```
+
+### 3. Publish The Example Package
+
+When using Docker, `register-local` must point at a path that exists inside the `skill-hub` container. The compose file mounts this repo’s `examples/` directory at `/workspace/examples`.
+
+```bash
+curl -sS -X POST http://localhost:8040/v1/packages/register-local \
+  -H "content-type: application/json" \
+  -d '{"source_dir":"/workspace/examples/hello-skill"}'
+```
+
+What this does:
+
+- validates `skillhub.yaml`
+- copies declared package files into Nexus under `/skill-hub/artifacts/...`
+- writes package metadata under `/skill-hub/packages/...`
+- writes a search document under `/skill-hub/search/...`
+
+### 4. Search The Catalog
+
+```bash
+curl -sS "http://localhost:8040/v1/packages/search?q=hello&limit=5"
+```
+
+If Nexus search is healthy, this uses Nexus search. If not, `skill-hub` falls back to metadata search.
+
+### 5. Retrieve The Published Package
+
+Artifact metadata:
+
+```bash
+curl -sS http://localhost:8040/v1/packages/nexi-lab/hello-skill/0.1.0/artifact
+```
+
+Read a published file:
+
+```bash
+curl -sS "http://localhost:8040/v1/packages/nexi-lab/hello-skill/0.1.0/content?path=SKILL.md"
+```
+
+### 6. Preview The Install
+
+```bash
+curl -sS -X POST http://localhost:8040/v1/installations/preview \
+  -H "content-type: application/json" \
+  -d '{
+    "publisher": "nexi-lab",
+    "name": "hello-skill",
+    "version": "0.1.0",
+    "target": "user",
+    "scope_id": "demo-user"
+  }'
+```
+
+### 7. Install The Package
+
+```bash
+curl -sS -X POST http://localhost:8040/v1/installations \
+  -H "content-type: application/json" \
+  -d '{
+    "publisher": "nexi-lab",
+    "name": "hello-skill",
+    "version": "0.1.0",
+    "target": "user",
+    "scope_id": "demo-user"
+  }'
+```
+
+### 8. Run The Smoke Script
+
+```bash
+bash scripts/e2e_smoke.sh
+```
+
+## Local Development
+
+Without Docker:
+
+```bash
+export NEXUS_BASE_URL=http://127.0.0.1:2026
+export NEXUS_API_KEY=dev-key
+export SKILLHUB_NEXUS_CATALOG_ROOT=/skill-hub
+export SKILLHUB_NEXUS_INSTALL_ROOT=/skills
+
+uv sync
+uv run skillhub serve
+```
+
+## Developer Verification
+
+```bash
+uv run pytest
+uv run python -m compileall src tests
+docker compose -f compose.yaml config
+docker compose -f compose.yaml -f compose.local.yaml config
+```
+
+## Repo Layout
 
 ```text
 skill-hub/
   docs/
-    architecture/
     api/
+    architecture/
   examples/
     hello-skill/
+  scripts/
+    e2e_smoke.sh
   src/
     skillhub/
-  tests/
+  compose.yaml
+  compose.local.yaml
 ```
 
-## Development
+## Architecture And API Docs
 
-Run the test suite:
-
-```bash
-uv run pytest
-```
-
-Compile-check the source tree:
-
-```bash
-uv run python -m compileall src tests
-```
-
-## Roadmap
-
-### Phase 1
-
-- local package registration
-- remote Nexus health probing
-- remote Nexus file materialization
-- install preview and install tracking
-- stable package path conventions
-
-### Phase 2
-
-- workflow materialization
-- MCP package materialization
-- credential binding
-- access-manifest generation
-- rollback and snapshot-aware installs
+- `docs/architecture/phase1.md`
+- `docs/api/phase1.md`
 
 ## License
 
