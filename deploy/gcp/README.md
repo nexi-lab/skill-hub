@@ -12,9 +12,9 @@ Current target:
 
 Files:
 
-- `startup.sh`: bootstraps Docker, clones `nexi-lab/skill-hub`, and starts the stack
+- `startup.sh`: bootstraps Docker on the VM
 - `compose.gcp.yaml`: restart policy override for the Compose stack
-- `deploy.sh`: creates or updates the VM, static IP, and firewall rule
+- `deploy.sh`: creates or updates the VM, static IP, firewall rule, syncs the local repo to the VM, and starts the stack remotely
 
 Default deployment settings:
 
