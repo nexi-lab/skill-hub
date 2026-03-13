@@ -40,12 +40,15 @@ Owns:
 
 ### Publish
 
-Publishing a local package does four things:
+Publishing through `POST /v1/packages/upload` does four things:
 
 1. load `skillhub.yaml`
 2. validate all declared package files
 3. write artifact files into Nexus under `/skill-hub/artifacts/...`
 4. write package metadata and a search document into Nexus
+
+The older `register` and `register-local` endpoints remain as compatibility paths,
+but the public package flow should now be thought of as `upload -> search -> download -> install`.
 
 ### Search
 

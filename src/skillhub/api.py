@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query, Response
 
 from skillhub.models import (
     InstallationListResponse,
@@ -77,7 +77,7 @@ def search_packages(
     tags=["packages"],
 )
 def register_package(request: PackageRegistrationRequest) -> PackageVersionResponse:
-    """Register a package version in the catalog."""
+    """Register package metadata only. Internal/admin compatibility endpoint."""
     package = service.register_package(request)
     return PackageVersionResponse(package=package)
 
@@ -89,11 +89,31 @@ def register_package(request: PackageRegistrationRequest) -> PackageVersionRespo
     tags=["packages"],
 )
 def register_local_package(request: LocalPackageRegistrationRequest) -> PackageVersionResponse:
-    """Register a package version from a local source directory."""
+    """Register a package from a server-local source directory. Internal/admin endpoint."""
     try:
         package = service.register_local_package(request)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return PackageVersionResponse(package=package)
+
+
+@app.post(
+    "/v1/packages/upload",
+    status_code=201,
+    response_model=PackageVersionResponse,
+    tags=["packages"],
+)
+def upload_package(
+    archive: bytes = Body(..., media_type="application/zip"),
+    filename: str = Query("package.zip", min_length=1),
+) -> PackageVersionResponse:
+    """Upload a zip archive that contains skillhub.yaml and the declared package files."""
+    try:
+        package = service.upload_package_archive(filename, archive)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except NexusRemoteError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return PackageVersionResponse(package=package)
 
 
@@ -162,6 +182,27 @@ def get_package_content(
     except NexusRemoteError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return PackageContentResponse(package_key=package.versioned_key, path=path, content=content)
+
+
+@app.get(
+    "/v1/packages/{publisher}/{name}/{version}/download",
+    tags=["packages"],
+)
+def download_package(publisher: str, name: str, version: str) -> Response:
+    """Download one published package version as a zip archive."""
+    try:
+        filename, archive = service.download_package_archive(publisher, name, version)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except NexusRemoteError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return Response(
+        content=archive,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.post("/v1/installations/preview", response_model=InstallPreview, tags=["installations"])

@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
-from skillhub.local_package import collect_declared_package_files, load_local_package
+from skillhub.local_package import (
+    build_package_archive,
+    collect_declared_package_files,
+    extract_package_archive,
+    load_local_package,
+    read_local_package_file_bytes,
+)
 from skillhub.models import (
     InstallPreview,
     InstallationRecord,
@@ -55,6 +62,14 @@ class SkillHubService:
         package_files = collect_declared_package_files(package_dir, package.manifest)
         return self._packages.upsert(package, package_files)
 
+    def upload_package_archive(self, filename: str, archive_bytes: bytes) -> PackageRecord:
+        """Import a zip archive into the package catalog."""
+        upload_root = Path(tempfile.mkdtemp(prefix="skillhub-upload-"))
+        package_dir = extract_package_archive(filename, archive_bytes, upload_root)
+        return self.register_local_package(
+            LocalPackageRegistrationRequest(source_dir=str(package_dir))
+        )
+
     def list_packages(self) -> list[PackageRecord]:
         return self._packages.list_all()
 
@@ -91,9 +106,40 @@ class SkillHubService:
         package = self.get_package_version(publisher, name, version)
         return self._nexus.get_package_artifact_content(package, path)
 
+    def download_package_archive(
+        self,
+        publisher: str,
+        name: str,
+        version: str,
+    ) -> tuple[str, bytes]:
+        """Build a zip archive for one published package version."""
+        package = self.get_package_version(publisher, name, version)
+        if not package.artifact_files:
+            raise ValueError(
+                "Package does not have any published artifact files. Upload or register-local it first."
+            )
+
+        package_files = [
+            (relative_path, self._read_package_artifact_bytes(package, relative_path))
+            for relative_path in package.artifact_files
+        ]
+        filename = f"{package.manifest.publisher}-{package.manifest.name}-{package.manifest.version}.zip"
+        return filename, build_package_archive(package_files)
+
     def probe_nexus(self) -> NexusRemoteHealth:
         """Probe remote Nexus health."""
         return self._nexus.probe_remote()
+
+    def _read_package_artifact_bytes(self, package: PackageRecord, relative_path: str) -> bytes:
+        if package.artifact_uri.startswith("nexus://"):
+            return self._nexus.get_package_artifact_bytes(package, relative_path)
+
+        source_dir = package.local_source_dir
+        if not source_dir:
+            raise ValueError(
+                f"Package artifact bytes are unavailable for {package.versioned_key}: no local or Nexus artifact source."
+            )
+        return read_local_package_file_bytes(source_dir, relative_path)
 
     def preview_install(self, request: InstallationRequest) -> InstallPreview:
         """Resolve the remote Nexus target path for a package install."""

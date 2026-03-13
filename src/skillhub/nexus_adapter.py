@@ -607,6 +607,11 @@ class NexusAdapter:
 
     def get_package_artifact_content(self, package: PackageRecord, relative_path: str) -> str:
         """Read one text file from the Nexus-backed package artifact."""
+        content = self.get_package_artifact_bytes(package, relative_path)
+        return content.decode("utf-8", errors="replace")
+
+    def get_package_artifact_bytes(self, package: PackageRecord, relative_path: str) -> bytes:
+        """Read one file from the Nexus-backed package artifact."""
         normalized = PurePosixPath(relative_path).as_posix()
         if normalized not in package.artifact_files:
             raise NexusRemoteError(
@@ -615,7 +620,7 @@ class NexusAdapter:
         artifact_root = self._artifact_root_from_uri(package)
         if not artifact_root:
             raise NexusRemoteError("Package artifact is not stored in Nexus")
-        content = self._read_text(f"{artifact_root}/{normalized}")
+        content = self._read_bytes(f"{artifact_root}/{normalized}")
         if content is None:
             raise NexusRemoteError(f"Artifact file missing from Nexus: {normalized}")
         return content

@@ -45,6 +45,33 @@ Probes the configured Nexus instance.
 
 ## Packages
 
+### `POST /v1/packages/upload`
+
+Uploads a package zip and publishes its real files into the Nexus-backed catalog.
+
+This is the recommended public publish API for Phase 1.
+
+Request:
+
+- body: raw zip bytes
+- content type: `application/zip`
+- optional query param: `filename`
+
+Example:
+
+```bash
+curl -X POST \
+  "http://127.0.0.1:8040/v1/packages/upload?filename=hello-skill.zip" \
+  -H "content-type: application/zip" \
+  --data-binary @hello-skill.zip
+```
+
+The uploaded archive must contain exactly one package root with:
+
+- `skillhub.yaml`
+- `SKILL.md`
+- any declared `references/`, `examples/`, `assets/`, or entrypoint files
+
 ### `GET /v1/packages`
 
 Lists all published package versions.
@@ -102,11 +129,14 @@ Example response:
 
 Registers a package record from an explicit manifest payload.
 
-This is metadata-oriented. If the artifact is not already in Nexus, later installs may not succeed.
+This is metadata-oriented and kept for internal/admin compatibility.
+If the artifact is not already in Nexus, later installs may not succeed.
 
 ### `POST /v1/packages/register-local`
 
 Publishes a local package into the Nexus-backed catalog.
+
+This is a server-local import path and is also considered internal/admin.
 
 Example request:
 
@@ -148,6 +178,20 @@ Example:
 
 ```text
 GET /v1/packages/nexi-lab/hello-skill/0.1.0/content?path=SKILL.md
+```
+
+### `GET /v1/packages/{publisher}/{name}/{version}/download`
+
+Downloads one published package version as a zip archive.
+
+This is the recommended public retrieval API for Phase 1.
+
+Example:
+
+```bash
+curl -L \
+  "http://127.0.0.1:8040/v1/packages/nexi-lab/hello-skill/0.1.0/download" \
+  -o hello-skill-0.1.0.zip
 ```
 
 ## Installations

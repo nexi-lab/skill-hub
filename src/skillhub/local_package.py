@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import io
+import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from skillhub.manifest import load_manifest
 from skillhub.models import PackageRecord, SkillManifest
@@ -38,6 +40,19 @@ def _ensure_relative_file(package_dir: Path, relative_path: str) -> LocalPackage
     return LocalPackageFile(relative_path=normalized.as_posix(), absolute_path=absolute_path)
 
 
+def _normalize_archive_member(member_name: str) -> tuple[str, ...] | None:
+    normalized = PurePosixPath(member_name.strip("/"))
+    if not normalized.parts:
+        return None
+    if normalized.is_absolute() or ".." in normalized.parts:
+        raise ValueError(f"Archive member escapes package root: {member_name}")
+    if normalized.parts[0] == "__MACOSX":
+        return None
+    if normalized.name == ".DS_Store":
+        return None
+    return normalized.parts
+
+
 def resolve_package_dir(source_dir: str | Path) -> Path:
     """Resolve and validate a local package directory."""
     package_dir = Path(source_dir).expanduser().resolve()
@@ -46,6 +61,11 @@ def resolve_package_dir(source_dir: str | Path) -> Path:
     if not package_dir.is_dir():
         raise ValueError(f"Package source must be a directory: {package_dir}")
     return package_dir
+
+
+def read_local_package_file_bytes(package_dir: str | Path, relative_path: str) -> bytes:
+    """Read one declared package file from a local directory."""
+    return _ensure_relative_file(resolve_package_dir(package_dir), relative_path).absolute_path.read_bytes()
 
 
 def collect_declared_package_files(
@@ -73,6 +93,59 @@ def collect_declared_package_files(
         seen.add(normalized)
         files.append(_ensure_relative_file(root, normalized))
     return files
+
+
+def extract_package_archive(
+    archive_name: str,
+    archive_bytes: bytes,
+    destination_root: str | Path,
+) -> Path:
+    """Extract a zip archive into a destination root and return the package directory."""
+    root = resolve_package_dir(destination_root)
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+            wrote_file = False
+            for info in archive.infolist():
+                parts = _normalize_archive_member(info.filename)
+                if parts is None:
+                    continue
+                destination = root.joinpath(*parts)
+                if info.is_dir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                    continue
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(archive.read(info))
+                wrote_file = True
+    except zipfile.BadZipFile as exc:
+        raise ValueError(f"Uploaded package is not a valid zip archive: {archive_name}") from exc
+
+    if not wrote_file:
+        raise ValueError(f"Uploaded package archive is empty: {archive_name}")
+
+    direct_manifest = root / "skillhub.yaml"
+    if direct_manifest.exists():
+        return root
+
+    candidates = sorted({manifest_path.parent for manifest_path in root.rglob("skillhub.yaml")})
+    if not candidates:
+        raise FileNotFoundError("Uploaded package archive does not contain skillhub.yaml")
+    if len(candidates) > 1:
+        raise ValueError(
+            "Uploaded package archive must contain exactly one package root with skillhub.yaml"
+        )
+    return candidates[0]
+
+
+def build_package_archive(files: list[tuple[str, bytes]]) -> bytes:
+    """Build a zip archive from relative package paths and file bytes."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for relative_path, content in sorted(files, key=lambda item: item[0]):
+            normalized = PurePosixPath(relative_path)
+            if normalized.is_absolute() or ".." in normalized.parts:
+                raise ValueError(f"Package archive path must stay within package root: {relative_path}")
+            archive.writestr(normalized.as_posix(), content)
+    return buffer.getvalue()
 
 
 def compute_local_artifact_digest(files: list[LocalPackageFile]) -> str:
