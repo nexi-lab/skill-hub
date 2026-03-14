@@ -10,7 +10,7 @@ def _adapter() -> NexusAdapter:
     return NexusAdapter(
         Settings(
             nexus_base_url="http://localhost:2026",
-            nexus_api_key="dev-key",
+            nexus_api_key="sk-dev-skillhub-admin-1234567890abcdef",
             nexus_install_root="/skills",
             nexus_catalog_root="/skill-hub",
             nexus_timeout_seconds=5.0,
@@ -213,3 +213,48 @@ def test_wait_for_search_visibility_retries_until_exact_document_queryable(monke
     adapter._wait_for_search_visibility(package)
 
     assert attempts["count"] == 3
+
+
+def test_index_search_document_uses_explicit_index_api(monkeypatch) -> None:
+    adapter = _adapter()
+    package = _package()
+    calls: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def _fake_request(method, path, *, json_body=None, params=None, expected_statuses=None):
+        calls.append((method, path, json_body))
+        return httpx.Response(200, json={"status": "indexed", "count": 1})
+
+    monkeypatch.setattr(adapter, "_request", _fake_request)
+
+    indexed = adapter._index_search_document(package, "# Hello Skill\n")
+
+    assert indexed is True
+    assert calls == [
+        (
+            "POST",
+            "/api/v2/search/index",
+            {
+                "documents": [
+                    {
+                        "id": package.search_document_path,
+                        "path": package.search_document_path,
+                        "text": "# Hello Skill\n",
+                    }
+                ]
+            },
+        )
+    ]
+
+
+def test_index_search_document_falls_back_when_explicit_indexing_fails(monkeypatch) -> None:
+    adapter = _adapter()
+    package = _package()
+
+    def _fake_request(method, path, *, json_body=None, params=None, expected_statuses=None):
+        raise NexusRemoteError("Nexus POST /api/v2/search/index failed (500): Search index failed")
+
+    monkeypatch.setattr(adapter, "_request", _fake_request)
+
+    indexed = adapter._index_search_document(package, "# Hello Skill\n")
+
+    assert indexed is False

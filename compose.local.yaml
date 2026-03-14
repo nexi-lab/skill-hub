@@ -1,6 +1,17 @@
 services:
   nexus:
+    platform: ${NEXUS_SOURCE_PLATFORM:-linux/arm64}
     build:
-      context: ..
-      dockerfile: skill-hub/docker/nexus.local.Dockerfile
+      context: ${NEXUS_SOURCE_DIR:-..}
+      dockerfile: ${NEXUS_SOURCE_DOCKERFILE:-Dockerfile}
+      args:
+        TORCH_VARIANT: ${NEXUS_TORCH_VARIANT:-cpu}
     image: skillhub-local-nexus:latest
+    environment:
+      NEXUS_CONFIG_FILE: /app/configs/config.skillhub.yaml
+    volumes:
+      - nexus-data:/app/data
+      - ./docker/nexus.skillhub.yaml:/app/configs/config.skillhub.yaml:ro
+
+volumes:
+  nexus-data:

@@ -6,6 +6,9 @@ Nexus-backed skill catalog, package publishing, search, and installation for `SK
 
 `skill-hub` publishes a local `SKILL.md` package into Nexus, makes it searchable, and installs it into `/skills/...` through a clean API.
 
+The bundled Docker stack in this repo is an integration harness for local/GCP validation.
+The intended production boundary is: existing Nexus runtime + `skill-hub` app.
+
 ## What Works Today
 
 Phase 1 is now genuinely Nexus-backed.
@@ -16,6 +19,12 @@ Phase 1 is now genuinely Nexus-backed.
 - search the published package catalog, using Nexus search when available
 - install published packages into `system`, `zone`, `user`, or `agent` scopes
 - run the full stack with Docker: Postgres + Nexus + `skill-hub`
+
+Recommended long-term deployment model:
+
+- Nexus runs as its own runtime/infrastructure stack
+- `skill-hub` connects to that Nexus over `NEXUS_BASE_URL` + `NEXUS_API_KEY`
+- the bundled compose files remain for smoke tests and demos
 
 What is still out of scope:
 
@@ -95,7 +104,9 @@ Start the default stack:
 docker compose -f compose.yaml up --build
 ```
 
-This builds a Nexus container from PyPI inside the repo and installs `nexus-ai-fs[semantic-search]`, so semantic search works from a clean `skill-hub` clone without private registry access.
+This builds a thin wrapper around the official Nexus release image `ghcr.io/nexi-lab/nexus:0.9.2`.
+The wrapper only patches the missing `libgomp1` runtime dependency so txtai-backed search works correctly with the released image.
+The wrapper also bakes in a minimal `config.skillhub.yaml` so the release image does not silently boot with the bundled `config.demo.yaml`, which is a demo profile and not the right runtime shape for `skill-hub`.
 
 If you are developing in a workspace that also has the Nexus repo checked out as the parent directory, you can override the default service and build Nexus from local source:
 
@@ -103,21 +114,36 @@ If you are developing in a workspace that also has the Nexus repo checked out as
 docker compose -f compose.yaml -f compose.local.yaml up --build
 ```
 
-The local-source override installs `.[semantic-search]` from the checked-out Nexus repo, so the default and local-source boot paths both enable txtai-backed search.
+The local-source override uses the Nexus repo’s own root `Dockerfile`, so it includes the same Rust extensions and runtime wiring as the official Nexus image path.
 
 The stack starts:
 
 - `postgres` on the internal Docker network
+- `dragonfly` on the internal Docker network
 - `nexus` on `http://localhost:2026`
 - `skill-hub` on `http://localhost:8040`
 
 Compose enables Nexus search and uses:
 
-- `NEXUS_API_KEY=dev-key`
+- `NEXUS_API_KEY=sk-dev-skillhub-admin-1234567890abcdef`
+- `NEXUS_IMAGE=ghcr.io/nexi-lab/nexus:0.9.2`
+- `NEXUS_PLATFORM=linux/amd64`
+- `NEXUS_CONFIG_FILE=/app/configs/config.skillhub.yaml`
+- `NEXUS_CACHE_BACKEND=dragonfly`
+- `NEXUS_DRAGONFLY_URL=redis://dragonfly:6379`
+- `DRAGONFLY_MAXMEMORY=512mb`
+- `DRAGONFLY_THREADS=2`
+- `NEXUS_HEALTH_START_PERIOD=120s`
 - `SKILLHUB_NEXUS_CATALOG_ROOT=/skill-hub`
 - `SKILLHUB_NEXUS_INSTALL_ROOT=/skills`
 
-On the first boot, Nexus may spend extra time downloading the txtai embedding model into the Docker volume cache under `/app/data/.cache`. After that, restarts are much faster.
+On the first boot, Postgres initializes the `vector` extension and Nexus may spend extra time downloading the txtai embedding model into the Docker volume cache under `/app/data/.cache`. After that, restarts are much faster.
+If you already have an older local stack volume, reset it once so the init SQL runs:
+
+```bash
+docker compose -f compose.yaml down -v
+docker compose -f compose.yaml up --build
+```
 
 ### 2. Verify The Stack
 
@@ -159,6 +185,23 @@ curl -sS http://localhost:2026/api/v2/search/stats
 ```
 
 You should see `"backend": "txtai"` once the search daemon is ready.
+
+If you want to use a different official Nexus image tag:
+
+```bash
+NEXUS_IMAGE=ghcr.io/nexi-lab/nexus:0.9.2 docker compose -f compose.yaml up --build
+```
+
+On Apple Silicon, the default release-image path intentionally runs the amd64 image under emulation because the current `0.9.2` arm64 release image still has a ggml runtime issue.
+That path is valid for smoke checks, but a full readiness/search validation is more trustworthy on an amd64 host such as the GCP deployment.
+
+To confirm the pgvector database extension is enabled:
+
+```bash
+docker exec skillhub-postgres psql -U skillhub -d nexus -c '\dx'
+```
+
+You should see `vector` in the installed extensions list for a fresh stack.
 
 ### 5. Retrieve The Published Package
 
@@ -214,7 +257,7 @@ Without Docker:
 
 ```bash
 export NEXUS_BASE_URL=http://127.0.0.1:2026
-export NEXUS_API_KEY=dev-key
+export NEXUS_API_KEY=sk-dev-skillhub-admin-1234567890abcdef
 export SKILLHUB_NEXUS_CATALOG_ROOT=/skill-hub
 export SKILLHUB_NEXUS_INSTALL_ROOT=/skills
 

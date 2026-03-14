@@ -323,6 +323,35 @@ class NexusAdapter:
         except NexusRemoteError:
             return
 
+    def _index_search_document(self, package: PackageRecord, document_text: str) -> bool:
+        """Prefer explicit indexing for synthetic package search documents.
+
+        Falls back to refresh-based indexing when the remote Nexus does not yet
+        implement ``/api/v2/search/index`` correctly.
+        """
+        try:
+            self._request(
+                "POST",
+                "/api/v2/search/index",
+                json_body={
+                    "documents": [
+                        {
+                            "id": package.search_document_path,
+                            "path": package.search_document_path,
+                            "text": document_text,
+                        }
+                    ]
+                },
+            )
+            return True
+        except NexusRemoteError as exc:
+            logger.debug(
+                "Explicit Nexus search indexing failed for %s, falling back to refresh: %s",
+                package.versioned_key,
+                exc,
+            )
+            return False
+
     def _metadata_fallback_hits(
         self,
         packages: list[PackageRecord],
@@ -551,9 +580,10 @@ class NexusAdapter:
             }
         )
 
+        search_document = self.build_search_document(stored, package_files)
         self._write_text(
             stored.search_document_path,
-            self.build_search_document(stored, package_files),
+            search_document,
         )
         self._write_json(stored.catalog_record_path, stored.model_dump(mode="json"))
 
@@ -562,7 +592,8 @@ class NexusAdapter:
         ]
         packages.append(stored)
         self._write_package_index(packages)
-        self._notify_search_refresh(stored.search_document_path, "create")
+        if not self._index_search_document(stored, search_document):
+            self._notify_search_refresh(stored.search_document_path, "create")
         self._notify_search_refresh(stored.catalog_record_path, "create")
         self._wait_for_search_visibility(stored)
         return stored

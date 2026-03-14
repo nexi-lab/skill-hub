@@ -1,0 +1,16 @@
+services:
+  nexus:
+    build:
+      context: /opt/nexus-src
+      dockerfile: /opt/nexus-src/Dockerfile
+      args:
+        TORCH_VARIANT: cpu
+    image: skillhub-local-nexus:latest
+    environment:
+      NEXUS_DATABASE_URL: postgresql://skillhub:skillhub@postgres:5432/nexus_source
+    volumes:
+      - nexus-data:/app/data
+      - /opt/skill-hub/docker/nexus.skillhub.yaml:/app/configs/config.skillhub.yaml:ro
+
+volumes:
+  nexus-data:

@@ -10,6 +10,7 @@ ENV PYTHONUNBUFFERED=1 \
     SENTENCE_TRANSFORMERS_HOME=/app/data/.cache/sentence-transformers
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -21,7 +22,7 @@ WORKDIR /src
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
 
-RUN uv pip install --system ".[semantic-search]"
+RUN uv pip install --system ".[semantic-search]" "txtai[ann]>=9.0"
 
 RUN useradd -r -m -u 1000 -s /bin/bash nexus \
     && mkdir -p /app/data \
